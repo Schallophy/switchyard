@@ -107,6 +107,7 @@ export class Runtime {
   #catalogError: string | null = null;
   #warnings: string[];
   #responsesChain = new ResponseChainStore();
+  #chainStats = { requests: 0, hits: 0, fallbacks: 0 };
 
   private constructor(options: RuntimeOptions, store: StateStore) {
     this.config = options.config;
@@ -436,6 +437,13 @@ export class Runtime {
       candidates.length > 0 &&
       input.body.previous_response_id === undefined;
 
+    this.logger.debug("responses chaining", {
+      path: input.path,
+      enabled: chainEnabled,
+      items: Array.isArray(input.body.input) ? input.body.input.length : typeof input.body.input,
+      hasPrevious: input.body.previous_response_id !== undefined,
+    });
+
     let forwardBody = input.body;
     let chainItems: unknown[] | null = null;
     let chainHitKey: string | null = null;
@@ -464,6 +472,8 @@ export class Runtime {
         // 首轮也要让提供商保存，下一轮才能续接
         if (!chainHitKey) forwardBody = { ...input.body, store: true };
         chainItems = items;
+        this.#chainStats.requests += 1;
+        if (chainHitKey) this.#chainStats.hits += 1;
       }
     }
 
@@ -489,6 +499,7 @@ export class Runtime {
       this.#responsesChain.delete(chainHitKey);
       chainHitKey = null;
       chainServed = false;
+      this.#chainStats.fallbacks += 1;
       result = await runFailover({
         candidates,
         maxAttempts: input.maxAttempts ?? this.config.failover.maxAttempts,
@@ -519,6 +530,17 @@ export class Runtime {
 
     // 链式请求的上游 prompt 只是增量，不能用它校准「全量输入」的估算
     return { result, sample: chainServed ? null : sample };
+  }
+
+  /** Responses 会话续接的命中情况，用于在 /api/overview 里观测省钱效果。 */
+  chainStats(): { enabled: boolean; requests: number; hits: number; fallbacks: number; sessions: number } {
+    return {
+      enabled: this.config.responsesChaining.enabled,
+      requests: this.#chainStats.requests,
+      hits: this.#chainStats.hits,
+      fallbacks: this.#chainStats.fallbacks,
+      sessions: this.#responsesChain.size,
+    };
   }
 
   recordOutcome(result: FailoverResult, caller: CallerIdentity = ANONYMOUS_CALLER): void {

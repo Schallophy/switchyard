@@ -281,6 +281,7 @@ function buildOverview(runtime: Runtime): Record<string, unknown> {
     server: runtime.config.server,
     log: runtime.config.log,
     stats: runtime.store.stats,
+    chaining: runtime.chainStats(),
     callers: [...runtime.store.callers()].sort(
       (a, b) =>
         b.promptTokens + b.completionTokens - (a.promptTokens + a.completionTokens) ||
