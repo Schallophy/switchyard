@@ -117,6 +117,22 @@ test("extracts cached tokens from a stream", () => {
   });
 });
 
+test("keeps usage from a very long event line", () => {
+  // Responses 的 response.completed 会把整段输出放进同一行，长回答会超过旧上限
+  const body = "数".repeat(20_000);
+  const line = `data: {"type":"response.completed","response":{"usage":{"input_tokens":58,"output_tokens":32,"total_tokens":90},"output":[{"type":"message","content":[{"type":"output_text","text":"${body}"}]}]}}\n\n`;
+  const tracker = new SseUsageTracker();
+  for (let i = 0; i < line.length; i += 4_000) tracker.push(line.slice(i, i + 4_000));
+  assert.ok(Buffer.byteLength(line) > 16_384);
+  assert.deepEqual(tracker.usage, {
+    promptTokens: 58,
+    completionTokens: 32,
+    totalTokens: 90,
+    cachedPromptTokens: 0,
+    cacheReported: false,
+  });
+});
+
 test("ignores usage-free chunks", () => {
   const tracker = new SseUsageTracker();
   tracker.push('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n');
