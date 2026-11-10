@@ -4,6 +4,7 @@ import { ANONYMOUS_CALLER, CONSOLE_CALLER, type CallerIdentity } from "./core/ca
 import { apisFor as resolveApis, apiKindForPath, supportsApi as checkApi } from "./core/api.ts";
 import { EventLog } from "./core/events.ts";
 import { runFailover, type FailoverHooks, type FailoverResult } from "./core/failover.ts";
+import { priceTierAt, usageCost } from "./core/pricing.ts";
 import { activeModel, isDeadRetryDue, resolveRoute, selectCandidates } from "./core/selection.ts";
 import { StateStore } from "./store/state.ts";
 import type { AttemptRecord, AttemptOutcome, ModelRecord, NormalizedError, Usage } from "./types.ts";
@@ -209,6 +210,7 @@ export class Runtime {
       cachedPromptTokens: 0,
       cacheTrackedPromptTokens: 0,
       completionTokens: 0,
+      cost: 0,
       requests: 0,
       failures: 0,
       throttledUntil: null,
@@ -484,8 +486,10 @@ export class Runtime {
     caller: CallerIdentity = ANONYMOUS_CALLER,
     sample: CalibrationSample | null = null,
   ): void {
-    this.store.markUsed(model, usage);
-    this.store.addCallerUsage(caller, usage, model);
+    const tier = usage ? priceTierAt(this.config.pricing, model, new Date()) : null;
+    const cost = usage && tier ? usageCost(usage, tier, this.config.pricing.unit) : 0;
+    this.store.markUsed(model, usage, cost);
+    this.store.addCallerUsage(caller, usage, model, cost);
     if (usage && sample) {
       this.store.observeCalibration(model, sample.hasTools, sample.estimatedPromptTokens, usage.promptTokens);
     }
@@ -684,6 +688,20 @@ export class Runtime {
   resetUsage(): void {
     this.store.resetUsage();
     this.events.push({ kind: "config", level: "info", message: "用量统计已重置" });
+  }
+
+  /** 用指定时刻命中的价格档重算已有 token 的成本（历史数据没有逐请求时间）。 */
+  backfillCosts(at: Date): void {
+    this.store.recomputeCosts((model, usage) => {
+      if (!model) return 0;
+      const tier = priceTierAt(this.config.pricing, model, at);
+      return tier ? usageCost(usage, tier, this.config.pricing.unit) : 0;
+    });
+    this.events.push({
+      kind: "config",
+      level: "info",
+      message: `成本已按 ${at.toLocaleString("zh-CN")} 的单价重算`,
+    });
   }
 
   revive(code: string): void {

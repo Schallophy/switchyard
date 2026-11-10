@@ -19,6 +19,7 @@ export interface Stats {
   cachedPromptTokens: number;
   cacheTrackedPromptTokens: number;
   completionTokens: number;
+  cost: number;
 }
 
 export interface CallerRecord {
@@ -31,6 +32,7 @@ export interface CallerRecord {
   cachedPromptTokens: number;
   cacheTrackedPromptTokens: number;
   completionTokens: number;
+  cost: number;
   firstSeenAt: string;
   lastSeenAt: string;
   lastModel: string | null;
@@ -80,6 +82,7 @@ function blankRecord(code: string): ModelRecord {
     cachedPromptTokens: 0,
     cacheTrackedPromptTokens: 0,
     completionTokens: 0,
+    cost: 0,
     requests: 0,
     failures: 0,
     throttledUntil: null,
@@ -97,6 +100,7 @@ function blankCaller(caller: CallerIdentity, at: string): CallerRecord {
     cachedPromptTokens: 0,
     cacheTrackedPromptTokens: 0,
     completionTokens: 0,
+    cost: 0,
     firstSeenAt: at,
     lastSeenAt: at,
     lastModel: null,
@@ -118,6 +122,7 @@ function blankState(): PersistedState {
       cachedPromptTokens: 0,
       cacheTrackedPromptTokens: 0,
       completionTokens: 0,
+      cost: 0,
     },
   };
 }
@@ -197,7 +202,7 @@ export class StateStore {
     this.saveSoon();
   }
 
-  markUsed(code: string, usage: Usage | null): void {
+  markUsed(code: string, usage: Usage | null, cost = 0): void {
     const record = this.#data.models[code] ?? blankRecord(code);
     const cached = usage?.cachedPromptTokens ?? 0;
     const tracked = usage?.cacheReported ? usage.promptTokens : 0;
@@ -216,12 +221,14 @@ export class StateStore {
       cachedPromptTokens: record.cachedPromptTokens + cached,
       cacheTrackedPromptTokens: record.cacheTrackedPromptTokens + tracked,
       completionTokens: record.completionTokens + (usage?.completionTokens ?? 0),
+      cost: record.cost + cost,
     };
     if (usage) {
       this.#data.stats.promptTokens += usage.promptTokens;
       this.#data.stats.cachedPromptTokens += cached;
       this.#data.stats.cacheTrackedPromptTokens += tracked;
       this.#data.stats.completionTokens += usage.completionTokens;
+      this.#data.stats.cost += cost;
     }
     this.saveSoon();
   }
@@ -232,7 +239,7 @@ export class StateStore {
     this.saveSoon();
   }
 
-  addUsage(code: string, usage: Usage): void {
+  addUsage(code: string, usage: Usage, cost = 0): void {
     const record = this.#data.models[code] ?? blankRecord(code);
     const tracked = usage.cacheReported ? usage.promptTokens : 0;
     this.#data.models[code] = {
@@ -242,11 +249,13 @@ export class StateStore {
       cachedPromptTokens: record.cachedPromptTokens + usage.cachedPromptTokens,
       cacheTrackedPromptTokens: record.cacheTrackedPromptTokens + tracked,
       completionTokens: record.completionTokens + usage.completionTokens,
+      cost: record.cost + cost,
     };
     this.#data.stats.promptTokens += usage.promptTokens;
     this.#data.stats.cachedPromptTokens += usage.cachedPromptTokens;
     this.#data.stats.cacheTrackedPromptTokens += tracked;
     this.#data.stats.completionTokens += usage.completionTokens;
+    this.#data.stats.cost += cost;
     this.saveSoon();
   }
 
@@ -268,7 +277,7 @@ export class StateStore {
     this.saveSoon();
   }
 
-  addCallerUsage(caller: CallerIdentity, usage: Usage | null, model: string): void {
+  addCallerUsage(caller: CallerIdentity, usage: Usage | null, model: string, cost = 0): void {
     const now = new Date().toISOString();
     const record = this.#data.callers[caller.id] ?? blankCaller(caller, now);
     const cached = usage?.cachedPromptTokens ?? 0;
@@ -280,6 +289,7 @@ export class StateStore {
       cachedPromptTokens: record.cachedPromptTokens + cached,
       cacheTrackedPromptTokens: record.cacheTrackedPromptTokens + tracked,
       completionTokens: record.completionTokens + (usage?.completionTokens ?? 0),
+      cost: record.cost + cost,
       lastSeenAt: now,
       lastModel: model,
     };
@@ -320,6 +330,28 @@ export class StateStore {
     this.saveSoon();
   }
 
+  /**
+   * 用给定单价重算已累计 token 的成本。调用方没有按模型拆分用量，
+   * 因此调用方成本按它最近使用的模型计价（单一模型或同价模型时准确）。
+   */
+  recomputeCosts(
+    costFor: (
+      model: string | null,
+      usage: { promptTokens: number; cachedPromptTokens: number; completionTokens: number },
+    ) => number,
+  ): void {
+    let total = 0;
+    for (const record of Object.values(this.#data.models)) {
+      record.cost = costFor(record.code, record);
+      total += record.cost;
+    }
+    for (const caller of Object.values(this.#data.callers)) {
+      caller.cost = costFor(caller.lastModel, caller);
+    }
+    this.#data.stats.cost = total;
+    this.saveSoon();
+  }
+
   resetUsage(): void {
     const now = new Date().toISOString();
     this.#data.stats = {
@@ -330,6 +362,7 @@ export class StateStore {
       cachedPromptTokens: 0,
       cacheTrackedPromptTokens: 0,
       completionTokens: 0,
+      cost: 0,
     };
     for (const [code, record] of Object.entries(this.#data.models)) {
       this.#data.models[code] = {
@@ -340,6 +373,7 @@ export class StateStore {
         cachedPromptTokens: 0,
         cacheTrackedPromptTokens: 0,
         completionTokens: 0,
+        cost: 0,
       };
     }
     this.#data.callers = {};
@@ -408,6 +442,7 @@ function hydrate(source: Record<string, unknown>): PersistedState {
       cachedPromptTokens: numberOr(record.cachedPromptTokens, 0),
       cacheTrackedPromptTokens: numberOr(record.cacheTrackedPromptTokens, 0),
       completionTokens: numberOr(record.completionTokens, 0),
+      cost: numberOr(record.cost, 0),
     };
   }
 
@@ -426,6 +461,7 @@ function hydrate(source: Record<string, unknown>): PersistedState {
         cachedPromptTokens: numberOr(record.cachedPromptTokens, 0),
         cacheTrackedPromptTokens: numberOr(record.cacheTrackedPromptTokens, 0),
         completionTokens: numberOr(record.completionTokens, 0),
+        cost: numberOr(record.cost, 0),
         firstSeenAt: typeof record.firstSeenAt === "string" ? record.firstSeenAt : base.stats.startedAt,
         lastSeenAt: typeof record.lastSeenAt === "string" ? record.lastSeenAt : base.stats.startedAt,
         lastModel: typeof record.lastModel === "string" ? record.lastModel : null,

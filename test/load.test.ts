@@ -201,6 +201,46 @@ test("the context guard applies the learned calibration ratio", async () => {
   await runtime.shutdown();
 });
 
+test("markSuccess accumulates cost from the configured price tier", async () => {
+  const { runtime } = await makeRuntime();
+  await runtime.updateChainModels(["a"]);
+  runtime.config.pricing = {
+    currency: "CNY",
+    unit: 1_000_000,
+    models: {
+      a: {
+        tiers: [
+          { from: "00:00", to: "00:00", input: 2, cachedInput: 0.2, output: 8 },
+        ],
+      },
+    },
+  };
+
+  runtime.markSuccess("a", {
+    promptTokens: 1_000,
+    completionTokens: 100,
+    totalTokens: 1_100,
+    cachedPromptTokens: 800,
+    cacheReported: true,
+  });
+
+  assert.equal(runtime.store.stats.cost, 1_360 / 1_000_000);
+  assert.equal(runtime.store.get("a")?.cost, 1_360 / 1_000_000);
+  assert.equal(runtime.store.callers()[0]?.cost, 1_360 / 1_000_000);
+
+  // 没有价格配置的模型不计成本
+  runtime.markSuccess("b", {
+    promptTokens: 1_000,
+    completionTokens: 100,
+    totalTokens: 1_100,
+    cachedPromptTokens: 0,
+    cacheReported: true,
+  });
+  assert.equal(runtime.store.stats.cost, 1_360 / 1_000_000);
+
+  await runtime.shutdown();
+});
+
 test("context updates validate the window and persist", async () => {
   const { runtime, dir } = await makeRuntime();
   const next = await runtime.updateChainContext({ window: 64_000, onOverflow: "passthrough" });

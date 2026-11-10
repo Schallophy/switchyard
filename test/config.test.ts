@@ -271,3 +271,70 @@ test("the intermediate upstreams array is migrated to providers", () => {
   assert.deepEqual(result.config.providers.map((item) => item.id), providers.map((item: any) => item.id));
   assert.equal(result.config.defaultProvider, providers[0].id);
 });
+
+test("pricing defaults to empty CNY per-million", () => {
+  const raw = JSON.parse(JSON.stringify(defaultConfig())) as Record<string, any>;
+  delete raw.pricing;
+  const result = normalizeConfig(raw);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.config.pricing, { currency: "CNY", unit: 1_000_000, models: {} });
+});
+
+test("pricing tiers normalize and keep order", () => {
+  const raw = JSON.parse(JSON.stringify(defaultConfig())) as Record<string, any>;
+  raw.pricing = {
+    currency: "CNY",
+    unit: 1_000_000,
+    models: {
+      model: {
+        tiers: [
+          { from: "22:00", to: "08:00", input: 1, cachedInput: 0.1, output: 4 },
+          { from: "08:00", to: "22:00", input: 2, cachedInput: 0.2, output: 8 },
+        ],
+      },
+    },
+  };
+  const result = normalizeConfig(raw);
+  assert.equal(result.ok, true);
+  assert.equal(result.config.pricing.currency, "CNY");
+  assert.deepEqual(
+    result.config.pricing.models.model?.tiers.map((tier) => tier.input),
+    [1, 2],
+  );
+});
+
+test("pricing rejects cache prices above the input price", () => {
+  const raw = JSON.parse(JSON.stringify(defaultConfig())) as Record<string, any>;
+  raw.pricing = {
+    models: {
+      model: { tiers: [{ from: "00:00", to: "00:00", input: 1, cachedInput: 2, output: 4 }] },
+    },
+  };
+  const result = normalizeConfig(raw);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((error) => error.includes("cachedInput")));
+});
+
+test("pricing requires the tiers to cover a full day", () => {
+  const raw = JSON.parse(JSON.stringify(defaultConfig())) as Record<string, any>;
+  raw.pricing = {
+    models: {
+      model: { tiers: [{ from: "08:00", to: "22:00", input: 2, cachedInput: 0.2, output: 8 }] },
+    },
+  };
+  const result = normalizeConfig(raw);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((error) => error.includes("覆盖一整天")));
+});
+
+test("pricing rejects malformed clock values", () => {
+  const raw = JSON.parse(JSON.stringify(defaultConfig())) as Record<string, any>;
+  raw.pricing = {
+    models: {
+      model: { tiers: [{ from: "25:00", to: "08:00", input: 1, cachedInput: 0.1, output: 4 }] },
+    },
+  };
+  const result = normalizeConfig(raw);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((error) => error.includes("HH:MM")));
+});

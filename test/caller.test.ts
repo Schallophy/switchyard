@@ -84,8 +84,8 @@ test("cache usage is counted for models and global stats", async () => {
       cachedPromptTokens: 80,
       cacheReported: true,
     };
-    store.markUsed("model-a", usage);
-    store.addCallerUsage(caller, usage, "model-a");
+    store.markUsed("model-a", usage, 0.5);
+    store.addCallerUsage(caller, usage, "model-a", 0.5);
     await store.flush();
 
     const reopened = await StateStore.open({ file, codes: ["model-a"] });
@@ -93,12 +93,20 @@ test("cache usage is counted for models and global stats", async () => {
     assert.equal(model?.promptTokens, 100);
     assert.equal(model?.cachedPromptTokens, 80);
     assert.equal(model?.cacheTrackedPromptTokens, 100);
+    assert.equal(model?.cost, 0.5);
     assert.equal(reopened.stats.promptTokens, 100);
     assert.equal(reopened.stats.cachedPromptTokens, 80);
     assert.equal(reopened.stats.cacheTrackedPromptTokens, 100);
+    assert.equal(reopened.stats.cost, 0.5);
     const [record] = reopened.callers();
     assert.equal(record?.cachedPromptTokens, 80);
     assert.equal(record?.cacheTrackedPromptTokens, 100);
+    assert.equal(record?.cost, 0.5);
+
+    reopened.recomputeCosts((model) => (model === "model-a" ? 2 : 0));
+    assert.equal(reopened.stats.cost, 2);
+    assert.equal(reopened.get("model-a")?.cost, 2);
+    assert.equal(reopened.callers()[0]?.cost, 2);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -117,9 +125,9 @@ test("resetting usage clears counters but keeps model state", async () => {
       cachedPromptTokens: 80,
       cacheReported: true,
     };
-    store.markUsed("model-a", usage);
+    store.markUsed("model-a", usage, 1.25);
     store.recordCallerRequest(caller, { ok: true, failovers: 2, model: "model-a" });
-    store.addCallerUsage(caller, usage, "model-a");
+    store.addCallerUsage(caller, usage, "model-a", 1.25);
     store.bumpRequests();
     store.bumpFailovers(2);
     store.resetUsage();
@@ -132,6 +140,7 @@ test("resetting usage clears counters but keeps model state", async () => {
     assert.equal(reopened.stats.cachedPromptTokens, 0);
     assert.equal(reopened.stats.cacheTrackedPromptTokens, 0);
     assert.equal(reopened.stats.completionTokens, 0);
+    assert.equal(reopened.stats.cost, 0);
 
     const model = reopened.get("model-a");
     assert.equal(model?.requests, 0);
@@ -139,6 +148,7 @@ test("resetting usage clears counters but keeps model state", async () => {
     assert.equal(model?.promptTokens, 0);
     assert.equal(model?.cachedPromptTokens, 0);
     assert.equal(model?.completionTokens, 0);
+    assert.equal(model?.cost, 0);
     assert.equal(model?.health, "alive");
     assert.ok(model?.lastUsedAt);
     assert.deepEqual(reopened.callers(), []);
@@ -208,6 +218,7 @@ test("legacy state without cache fields still opens", async () => {
     const store = await StateStore.open({ file, codes: ["model-a"] });
     assert.equal(store.stats.cachedPromptTokens, 0);
     assert.equal(store.stats.cacheTrackedPromptTokens, 0);
+    assert.equal(store.stats.cost, 0);
     assert.equal(store.get("model-a")?.cachedPromptTokens, 0);
     assert.equal(store.callers()[0]?.cacheTrackedPromptTokens, 0);
     assert.equal(store.calibrationRatio("model-a", false), 1);

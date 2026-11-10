@@ -111,6 +111,14 @@ export function registerAdminRoutes(router: Router, runtime: Runtime): void {
     ctx.send(200, { ok: true, stats: runtime.store.stats });
   });
 
+  router.add("POST", "/api/usage/backfill-cost", (ctx) => {
+    const body = asObject(ctx);
+    const at = typeof body.at === "string" ? new Date(body.at) : new Date();
+    if (Number.isNaN(at.getTime())) throw new HttpError(400, "at 必须是合法的 ISO 时间");
+    runtime.backfillCosts(at);
+    ctx.send(200, { ok: true, at: at.toISOString(), stats: runtime.store.stats });
+  });
+
   router.add("POST", "/api/models/:code/revive", (ctx) => {
     const code = ctx.params.code ?? "";
     if (!runtime.store.get(code)) {
@@ -264,6 +272,10 @@ function buildOverview(runtime: Runtime): Record<string, unknown> {
     })),
     defaultProvider: runtime.config.defaultProvider,
     modelProviders: runtime.config.modelProviders,
+    pricing: {
+      currency: runtime.config.pricing.currency,
+      unit: runtime.config.pricing.unit,
+    },
     keys: runtime.providerKeyInfos(),
     ui: runtime.config.ui,
     server: runtime.config.server,

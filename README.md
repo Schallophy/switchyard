@@ -247,6 +247,18 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
   "failover": {
     "maxAttempts": 8,
     "throttleCooldownMs": 60000
+  },
+  "pricing": {
+    "currency": "CNY",            // 展示币种
+    "unit": 1000000,              // 单价按每百万 token
+    "models": {
+      "deepseek-v4.1-flash-1017": {
+        "tiers": [
+          { "from": "22:00", "to": "08:00", "input": 1, "cachedInput": 0.1, "output": 4 },
+          { "from": "08:00", "to": "22:00", "input": 2, "cachedInput": 0.2, "output": 8 }
+        ]
+      }
+    }
   }
 }
 ```
@@ -273,6 +285,9 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 | `providers[].injectStreamUsage` | 流式聊天请求未显式设置时自动注入 `stream_options.include_usage` |
 | `failover.maxAttempts` | 单次请求最多尝试的模型数 |
 | `failover.throttleCooldownMs` | 限流冷却时长；冷却结束后模型自动回到候选序列 |
+| `pricing.currency` | 成本展示币种：`CNY` / `USD` / `EUR` / `GBP` / `JPY` / `KRW`，其他值按代码前缀显示 |
+| `pricing.unit` | 单价的 token 基数，默认 `1000000`（每百万 token） |
+| `pricing.models.<code>.tiers[]` | 分时段价格：`from` / `to`（本地时间 `HH:MM`，`from == to` 表示全天）、`input`、`cachedInput`、`output`。时间段必须覆盖一整天；`"*"` 可作为所有模型的兜底 |
 
 ### 环境变量
 
@@ -285,6 +300,21 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 | `SWITCHYARD_DATA_DIR` | 数据目录，默认 `./data` |
 | `SWITCHYARD_LOG_LEVEL` | `debug` / `info` / `warn` / `error` |
 
+### 成本估算
+
+配好 `pricing` 后，用量页、模型页和调用方明细会按每次请求发生的**本地时间**选择价格档并累计成本：
+
+```
+成本 = 新增输入 × input + 缓存命中 × cachedInput + 输出 × output
+```
+
+三项 token 都来自提供商的 `usage`，只有单价是本地配置。几个边界：
+
+- 时间段按网关进程的本地时区解释，必须完整覆盖 24 小时，否则保存配置时报错；
+- 只统计成功请求；提供商没返回 `usage` 的请求不计成本；
+- 不包含缓存写入费、免费额度、折扣、税与汇率；高上下文分档计价也无法按请求回拆；
+- 修改单价只影响之后的累计，不会重算已经记账的历史金额。历史数据可以用 `POST /api/usage/backfill-cost` 指定一个 `at` 时间（ISO 格式），按该时刻命中的价格档重算：模型与总计按各自 token 计算，调用方按最近使用的模型计价（单一模型或同价模型时准确）。
+
 ## 看板
 
 看板由 `src/ui/` 下的静态 HTML/CSS/ES module 直接提供，无需构建；主题始终跟随操作系统的深浅色设置。
@@ -292,7 +322,7 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 | 页面 | 内容 |
 | --- | --- |
 | 模型 | 当前输出与状态、请求/切换/Token 统计、路由轨道（拖动或 `Alt+↑/↓` 调整优先级）、设为当前输出、重置状态、编辑 API 能力、指定提供商、批量移出、添加模型面板（目录搜索/筛选/刷新与手动填写）、发送测试、链路策略摘要与最近事件 |
-| 用量 | 按调用方 API Key 汇总请求、失败、切换、真实输入/输出 Token 与缓存命中率，可分别排序并展开明细 |
+| 用量 | 按调用方 API Key 汇总请求、失败、切换、真实输入/输出 Token、缓存命中率与按配置单价估算的成本，可分别排序并展开明细 |
 | 事件 | 切换、失效、限流、恢复、配置变更，可按类型过滤、关键词搜索、暂停实时刷新 |
 | 设置 | 网关、提供商、故障转移、服务、日志、数据、原始 JSON 的完整表单；「数据」分组可重置用量统计；底部保存栏统一提交 |
 

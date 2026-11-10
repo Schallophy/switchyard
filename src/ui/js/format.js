@@ -36,6 +36,30 @@ export function fmtPercent(value) {
   return `${(number * 100).toFixed(1).replace(/\.0$/, "")}%`;
 }
 
+const CURRENCY_SYMBOLS = {
+  CNY: "¥",
+  USD: "$",
+  EUR: "€",
+  GBP: "£",
+  JPY: "¥",
+  KRW: "₩",
+};
+
+export function fmtMoney(value, currency = "CNY") {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  const symbol = CURRENCY_SYMBOLS[currency] ?? `${currency} `;
+  if (number === 0) return `${symbol}0`;
+
+  const abs = Math.abs(number);
+  const digits = abs >= 1 ? 2 : abs >= 0.01 ? 3 : 4;
+  const text = new Intl.NumberFormat("zh-CN", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(number);
+  return `${symbol}${text}`;
+}
+
 export function fmtCountdown(ms) {
   const total = Math.max(0, Math.ceil(ms / 1000));
   if (total < 60) return `${total} 秒`;

@@ -8,6 +8,7 @@ import {
   fmtInt,
   fmtMinutes,
   fmtMs,
+  fmtMoney,
   fmtPercent,
   fmtTokens,
   fmtWindow,
@@ -193,10 +194,15 @@ function statsHtml(data) {
     ["切换", fmtInt(stats.failovers)],
     ["Tokens", fmtTokens(tokens)],
     ["缓存率", fmtPercent(cacheRate(stats))],
+    ["成本", fmtMoney(stats.cost, currencyOf(data))],
     ["可用", `${data.chain.alive} / ${data.chain.models.length}`],
   ]
     .map(([key, value]) => `<div class="stat"><dt>${key}</dt><dd>${value}</dd></div>`)
     .join("");
+}
+
+function currencyOf(data) {
+  return data?.pricing?.currency || "CNY";
 }
 
 function railTools() {
@@ -800,6 +806,7 @@ function openDetail(code, ctx) {
       )}）`,
     ],
     ["缓存命中率", fmtPercent(cacheRate(model))],
+    ["成本", fmtMoney(model.cost, currencyOf(data))],
     ["最近使用", fmtAgo(model.lastUsedAt)],
     ["最近检测", fmtDateTime(model.checkedAt)],
   ];

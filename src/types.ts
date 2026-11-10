@@ -25,6 +25,8 @@ export interface ModelRecord {
   /** 提供商上报过缓存明细的 prompt token 数，用作缓存命中率的分母。 */
   cacheTrackedPromptTokens: number;
   completionTokens: number;
+  /** 按 pricing 配置估算的累计成本（配置币种）。 */
+  cost: number;
   requests: number;
   failures: number;
   throttledUntil: string | null;

@@ -1,4 +1,4 @@
-import { esc, fmtAgo, fmtDateTime, fmtInt, fmtPercent, fmtTokens } from "../format.js";
+import { esc, fmtAgo, fmtDateTime, fmtInt, fmtMoney, fmtPercent, fmtTokens } from "../format.js";
 import { store } from "../store.js";
 
 const COLUMNS = [
@@ -8,6 +8,7 @@ const COLUMNS = [
   ["inputTokens", "输入", true],
   ["cacheRate", "缓存率", true],
   ["completionTokens", "输出", true],
+  ["cost", "成本", true],
   ["lastSeenAt", "最近", true],
 ];
 
@@ -65,6 +66,7 @@ function paint() {
 
   const rows = sortedCallers();
   const total = summarize(rows);
+  const currency = store.data?.pricing?.currency || "CNY";
   const untracked = Math.max(0, total.promptTokens - total.cacheTrackedPromptTokens);
   const inputTitle =
     untracked > 0
@@ -75,7 +77,7 @@ function paint() {
     <div class="page-head">
       <div>
         <h1 class="page-title">用量</h1>
-        <p class="page-sub">按调用方 API Key 汇总请求、失败、切换与真实输入/输出 Token；输入为未命中缓存的部分，缓存命中率仅统计提供商上报了缓存明细的请求</p>
+        <p class="page-sub">按调用方 API Key 汇总请求、失败、切换与真实输入/输出 Token；输入为未命中缓存的部分，缓存命中率仅统计提供商上报了缓存明细的请求，成本按 config.json 的价格配置估算</p>
       </div>
     </div>
 
@@ -87,11 +89,15 @@ function paint() {
       <div class="stat"><dt>输入</dt><dd title="${esc(inputTitle)}">${fmtTokens(total.inputTokens)}</dd></div>
       <div class="stat"><dt>缓存命中率</dt><dd title="仅统计提供商上报了缓存明细的请求">${fmtPercent(cacheRate(total))}</dd></div>
       <div class="stat"><dt>输出</dt><dd>${fmtTokens(total.completionTokens)}</dd></div>
+      <div class="stat"><dt>成本</dt><dd title="按 config.json 的价格配置估算，非提供商账单">${fmtMoney(
+        total.cost,
+        currency,
+      )}</dd></div>
     </dl>
 
     ${
       rows.length
-        ? tableHtml(rows)
+        ? tableHtml(rows, currency)
         : `<div class="empty">
             <p class="empty-title">还没有调用记录</p>
             <p>客户端第一次通过网关请求后，这里会按 API Key 汇总。控制台里的「发送测试」也会计入。</p>
@@ -143,6 +149,7 @@ function summarize(rows) {
       sum.cachedPromptTokens += caller.cachedPromptTokens || 0;
       sum.cacheTrackedPromptTokens += caller.cacheTrackedPromptTokens || 0;
       sum.completionTokens += caller.completionTokens || 0;
+      sum.cost += caller.cost || 0;
       return sum;
     },
     {
@@ -154,11 +161,12 @@ function summarize(rows) {
       cachedPromptTokens: 0,
       cacheTrackedPromptTokens: 0,
       completionTokens: 0,
+      cost: 0,
     },
   );
 }
 
-function tableHtml(rows) {
+function tableHtml(rows, currency) {
   return `
     <div class="table-wrap">
       <table class="table">
@@ -170,7 +178,7 @@ function tableHtml(rows) {
           </tr>
         </thead>
         <tbody>
-          ${rows.map(rowHtml).join("")}
+          ${rows.map((row) => rowHtml(row, currency)).join("")}
         </tbody>
       </table>
     </div>
@@ -185,7 +193,7 @@ function headerCell(key, label, numeric) {
   </th>`;
 }
 
-function rowHtml(caller) {
+function rowHtml(caller, currency) {
   const expanded = local.expanded.has(caller.id);
   const input = inputTokens(caller);
   const rate = cacheRate(caller);
@@ -209,6 +217,10 @@ function rowHtml(caller) {
       <td class="num" data-label="输入" title="${esc(inputHint)}">${fmtTokens(input)}</td>
       <td class="num" data-label="缓存率">${fmtPercent(rate)}</td>
       <td class="num" data-label="输出">${fmtTokens(caller.completionTokens)}</td>
+      <td class="num" data-label="成本" title="按 config.json 的价格配置估算">${fmtMoney(
+        caller.cost,
+        currency,
+      )}</td>
       <td class="num" data-label="最近">${fmtAgo(caller.lastSeenAt)}</td>
       <td class="col-action">
         <button class="link-btn" type="button" data-action="expand" data-id="${esc(caller.id)}" aria-expanded="${expanded}">
@@ -223,7 +235,7 @@ function rowHtml(caller) {
   return (
     row +
     `<tr class="table-detail">
-      <td colspan="9">
+      <td colspan="10">
         <div class="detail-strip">
           <span>输入（新增） <strong>${fmtInt(input)}</strong></span>
           <span>缓存命中 <strong>${fmtInt(caller.cachedPromptTokens)}</strong></span>
@@ -231,6 +243,7 @@ function rowHtml(caller) {
           <span>原始输入 <strong>${fmtInt(caller.promptTokens)}</strong></span>
           <span>输出 <strong>${fmtInt(caller.completionTokens)}</strong></span>
           <span>合计 <strong>${fmtInt(input + (caller.completionTokens || 0))}</strong></span>
+          <span>成本 <strong>${fmtMoney(caller.cost, currency)}</strong></span>
           <span>首次出现 <strong>${fmtDateTime(caller.firstSeenAt)}</strong></span>
           <span>最近请求 <strong>${fmtDateTime(caller.lastSeenAt)}</strong></span>
           <span>最近模型 <strong>${esc(caller.lastModel || "—")}</strong></span>
@@ -244,7 +257,7 @@ function dataSignature(rows) {
   return rows
     .map(
       (caller) =>
-        `${caller.id}:${caller.requests}:${caller.failures}:${caller.failovers}:${caller.promptTokens}:${caller.cachedPromptTokens}:${caller.cacheTrackedPromptTokens}:${caller.completionTokens}:${caller.lastSeenAt}`,
+        `${caller.id}:${caller.requests}:${caller.failures}:${caller.failovers}:${caller.promptTokens}:${caller.cachedPromptTokens}:${caller.cacheTrackedPromptTokens}:${caller.completionTokens}:${caller.cost}:${caller.lastSeenAt}`,
     )
     .join("|");
 }

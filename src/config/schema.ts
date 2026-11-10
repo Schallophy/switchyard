@@ -76,6 +76,31 @@ export interface FailoverConfig {
   throttleCooldownMs: number;
 }
 
+export interface PriceTier {
+  /** 本地时间 HH:MM；from === to 表示全天。 */
+  from: string;
+  to: string;
+  /** 每 unit 个 token 的价格。 */
+  input: number;
+  cachedInput: number;
+  output: number;
+}
+
+export interface ModelPricing {
+  tiers: PriceTier[];
+}
+
+export interface PricingConfig {
+  currency: string;
+  /** 单价的 token 基数，例如 1_000_000 表示「每百万 token」。 */
+  unit: number;
+  /** 模型 code → 价格；"*" 作为所有模型的兜底。 */
+  models: Record<string, ModelPricing>;
+}
+
+export const DEFAULT_PRICING_CURRENCY = "CNY";
+export const DEFAULT_PRICING_UNIT = 1_000_000;
+
 export interface GatewayConfig {
   version: number;
   host: string;
@@ -91,6 +116,7 @@ export interface GatewayConfig {
   providers: ProviderConfig[];
   defaultProvider: string;
   failover: FailoverConfig;
+  pricing: PricingConfig;
 }
 
 export interface NormalizeResult {
@@ -150,6 +176,11 @@ export function defaultConfig(): GatewayConfig {
     failover: {
       maxAttempts: 8,
       throttleCooldownMs: 60_000,
+    },
+    pricing: {
+      currency: DEFAULT_PRICING_CURRENCY,
+      unit: DEFAULT_PRICING_UNIT,
+      models: {},
     },
   };
 }
@@ -458,6 +489,120 @@ function readModelApis(source: Obj, chain: ChainConfig, errors: string[]): Model
   return map;
 }
 
+const CLOCK_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+function readClock(value: unknown): number | null {
+  if (typeof value !== "string") return null;
+  const match = CLOCK_PATTERN.exec(value.trim());
+  if (!match) return null;
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
+function readPrice(value: unknown, path: string, errors: string[]): number {
+  if (value === undefined) {
+    errors.push(`${path} 不能为空`);
+    return 0;
+  }
+  const num = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  if (!Number.isFinite(num) || num < 0 || num > 1_000_000_000) {
+    errors.push(`${path} 必须是非负数字`);
+    return 0;
+  }
+  return num;
+}
+
+function coversDay(tiers: PriceTier[]): boolean {
+  const covered = new Array<boolean>(1_440).fill(false);
+  for (const tier of tiers) {
+    const from = readClock(tier.from) ?? 0;
+    const to = readClock(tier.to) ?? 0;
+    if (from === to) return true;
+    if (from < to) {
+      for (let minute = from; minute < to; minute += 1) covered[minute] = true;
+    } else {
+      for (let minute = from; minute < 1_440; minute += 1) covered[minute] = true;
+      for (let minute = 0; minute < to; minute += 1) covered[minute] = true;
+    }
+  }
+  return covered.every(Boolean);
+}
+
+function readPricing(source: Obj, errors: string[]): PricingConfig {
+  const pricing: PricingConfig = {
+    currency: DEFAULT_PRICING_CURRENCY,
+    unit: DEFAULT_PRICING_UNIT,
+    models: {},
+  };
+  if (source.pricing === undefined) return pricing;
+  if (!isObj(source.pricing)) {
+    errors.push("pricing 必须是对象");
+    return pricing;
+  }
+
+  const raw = source.pricing;
+  pricing.currency = readString(raw, "currency", pricing.currency) || pricing.currency;
+  pricing.unit = readNumber(raw, "unit", pricing.unit, 1, 1_000_000_000, "pricing.unit", errors);
+
+  if (raw.models === undefined) return pricing;
+  if (!isObj(raw.models)) {
+    errors.push("pricing.models 必须是对象");
+    return pricing;
+  }
+
+  for (const [rawCode, rawValue] of Object.entries(raw.models)) {
+    const code = rawCode.trim();
+    const path = `pricing.models.${code || "(empty)"}`;
+    if (!code) {
+      errors.push("pricing.models 包含空的模型 code");
+      continue;
+    }
+    if (!isObj(rawValue)) {
+      errors.push(`${path} 必须是对象`);
+      continue;
+    }
+    if (!Array.isArray(rawValue.tiers) || rawValue.tiers.length === 0) {
+      errors.push(`${path}.tiers 必须是非空数组`);
+      continue;
+    }
+    if (rawValue.tiers.length > 12) {
+      errors.push(`${path}.tiers 最多 12 档`);
+      continue;
+    }
+
+    const tiers: PriceTier[] = [];
+    for (const [index, rawTier] of rawValue.tiers.entries()) {
+      const tierPath = `${path}.tiers[${index}]`;
+      if (!isObj(rawTier)) {
+        errors.push(`${tierPath} 必须是对象`);
+        continue;
+      }
+      const from = readClock(rawTier.from);
+      const to = readClock(rawTier.to);
+      if (from === null) errors.push(`${tierPath}.from 必须是 HH:MM`);
+      if (to === null) errors.push(`${tierPath}.to 必须是 HH:MM`);
+      const input = readPrice(rawTier.input, `${tierPath}.input`, errors);
+      const cachedInput = readPrice(rawTier.cachedInput, `${tierPath}.cachedInput`, errors);
+      const output = readPrice(rawTier.output, `${tierPath}.output`, errors);
+      if (cachedInput > input) errors.push(`${tierPath}.cachedInput 不能高于 input`);
+      if (from === null || to === null) continue;
+      tiers.push({
+        from: String(rawTier.from).trim(),
+        to: String(rawTier.to).trim(),
+        input,
+        cachedInput,
+        output,
+      });
+    }
+    if (tiers.length === 0) continue;
+    if (!coversDay(tiers)) {
+      errors.push(`${path}.tiers 必须覆盖一整天（00:00–24:00），可用 from == to 表示全天`);
+    }
+    pricing.models[code] = { tiers };
+  }
+
+  return pricing;
+}
+
 export function normalizeConfig(input: unknown): NormalizeResult {
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -522,6 +667,8 @@ export function normalizeConfig(input: unknown): NormalizeResult {
       errors,
     ),
   };
+
+  config.pricing = readPricing(source, errors);
 
   return { ok: errors.length === 0, config, errors, warnings };
 }
