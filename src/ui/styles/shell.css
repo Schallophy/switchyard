@@ -70,6 +70,23 @@
   font-weight: 500;
 }
 
+.proto-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 7px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.proto-chip[hidden] {
+  display: none;
+}
+
 .state-dot {
   width: 7px;
   height: 7px;

@@ -1,4 +1,5 @@
 import { identifyCaller } from "../core/caller.ts";
+import { apiKindForPath } from "../core/api.ts";
 import type { Runtime } from "../runtime.ts";
 import type { AttemptRecord, NormalizedError, Usage } from "../types.ts";
 import { extractUsage } from "../util/usage.ts";
@@ -55,6 +56,7 @@ function proxy(ctx: Ctx, runtime: Runtime, path: string): Promise<void> {
     throw new HttpError(400, "请求体必须是 JSON 对象");
   }
 
+  const api = apiKindForPath(path);
   const body = payload as Record<string, unknown>;
   const requested = typeof body.model === "string" ? body.model : "auto";
   const stream = body.stream === true;
@@ -80,7 +82,7 @@ function proxy(ctx: Ctx, runtime: Runtime, path: string): Promise<void> {
   return runtime
     .requestThrough({ path, model: requested, body: forward, signal: controller.signal, caller })
     .then(async ({ result, sample }) => {
-      runtime.recordOutcome(result, caller);
+      runtime.recordOutcome(result, caller, api);
 
       if (!result.ok) {
         ctx.res.off("close", abort);
@@ -116,7 +118,7 @@ function proxy(ctx: Ctx, runtime: Runtime, path: string): Promise<void> {
         } catch {
           usage = null;
         }
-        runtime.markSuccess(result.model, usage, caller, sample);
+        runtime.markSuccess(result.model, usage, caller, sample, api);
         ctx.res.off("close", abort);
         ctx.sendRaw(200, text, {
           "content-type": "application/json; charset=utf-8",
@@ -136,7 +138,7 @@ function proxy(ctx: Ctx, runtime: Runtime, path: string): Promise<void> {
           "x-switchyard-failovers": String(result.failovers),
         },
       });
-      runtime.markSuccess(result.model, piped.usage, caller, sample);
+      runtime.markSuccess(result.model, piped.usage, caller, sample, api);
       ctx.res.off("close", abort);
       if (piped.error) {
         runtime.logger.warn("stream interrupted", { model: result.model, error: piped.error });

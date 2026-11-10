@@ -543,12 +543,13 @@ export class Runtime {
     };
   }
 
-  recordOutcome(result: FailoverResult, caller: CallerIdentity = ANONYMOUS_CALLER): void {
-    this.store.bumpRequests();
+  recordOutcome(result: FailoverResult, caller: CallerIdentity = ANONYMOUS_CALLER, api: ApiKind = "chat"): void {
+    this.store.bumpRequests(api);
     this.store.recordCallerRequest(caller, {
       ok: result.ok,
       failovers: result.failovers,
       model: result.ok ? result.model : null,
+      api,
     });
     for (const attempt of result.attempts) {
       if (!attempt.ok) this.store.markFailure(attempt.model);
@@ -592,11 +593,12 @@ export class Runtime {
     usage: Usage | null,
     caller: CallerIdentity = ANONYMOUS_CALLER,
     sample: CalibrationSample | null = null,
+    api: ApiKind = "chat",
   ): void {
     const tier = usage ? priceTierAt(this.config.pricing, model, new Date()) : null;
     const cost = usage && tier ? usageCost(usage, tier, this.config.pricing.unit) : 0;
-    this.store.markUsed(model, usage, cost);
-    this.store.addCallerUsage(caller, usage, model, cost);
+    this.store.markUsed(model, usage, cost, api);
+    this.store.addCallerUsage(caller, usage, model, cost, api);
     if (usage && sample) {
       this.store.observeCalibration(model, sample.hasTools, sample.estimatedPromptTokens, usage.promptTokens);
     }

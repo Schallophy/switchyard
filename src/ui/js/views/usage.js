@@ -2,6 +2,7 @@ import { esc, fmtAgo, fmtDateTime, fmtInt, fmtMoney, fmtPercent, fmtTokens } fro
 import { store } from "../store.js";
 
 const COLUMNS = [
+  ["lastApi", "协议", false],
   ["requests", "请求", true],
   ["failures", "失败", true],
   ["failovers", "切换", true],
@@ -11,6 +12,36 @@ const COLUMNS = [
   ["cost", "成本", true],
   ["lastSeenAt", "最近", true],
 ];
+
+const API_LABELS = {
+  chat: "Chat",
+  completions: "Completions",
+  responses: "Responses",
+  embeddings: "Embeddings",
+};
+
+const API_TITLES = {
+  chat: "Chat Completions（/v1/chat/completions）",
+  completions: "Completions（/v1/completions，旧版文本补全）",
+  responses: "Responses（/v1/responses）",
+  embeddings: "Embeddings（/v1/embeddings）",
+};
+
+function apiBadge(api) {
+  if (!api) return "—";
+  const label = API_LABELS[api] ?? api;
+  return `<span class="api-badge" title="${esc(API_TITLES[api] ?? api)}">${esc(label)}</span>`;
+}
+
+function protocolSummary() {
+  const apis = store.data?.stats?.apis;
+  if (!apis || typeof apis !== "object") return "—";
+  const parts = Object.entries(apis)
+    .filter(([, stat]) => (stat?.requests || 0) > 0)
+    .sort((a, b) => (b[1].requests || 0) - (a[1].requests || 0))
+    .map(([kind, stat]) => `${API_LABELS[kind] ?? kind} ${fmtInt(stat.requests)}`);
+  return parts.length ? parts.join(" · ") : "—";
+}
 
 const local = {
   sort: "inputTokens",
@@ -86,6 +117,7 @@ function paint() {
       <div class="stat"><dt>请求</dt><dd>${fmtInt(total.requests)}</dd></div>
       <div class="stat"><dt>失败</dt><dd>${fmtInt(total.failures)}</dd></div>
       <div class="stat"><dt>切换</dt><dd>${fmtInt(total.failovers)}</dd></div>
+      <div class="stat"><dt>协议</dt><dd title="按协议拆分的请求数">${protocolSummary()}</dd></div>
       <div class="stat"><dt>输入</dt><dd title="${esc(inputTitle)}">${fmtTokens(total.inputTokens)}</dd></div>
       <div class="stat"><dt>缓存命中率</dt><dd title="仅统计提供商上报了缓存明细的请求">${fmtPercent(cacheRate(total))}</dd></div>
       <div class="stat"><dt>输出</dt><dd>${fmtTokens(total.completionTokens)}</dd></div>
@@ -135,6 +167,7 @@ function sortValue(caller, key) {
   if (key === "lastSeenAt") return Date.parse(caller.lastSeenAt) || 0;
   if (key === "inputTokens") return inputTokens(caller);
   if (key === "cacheRate") return cacheRate(caller) ?? -1;
+  if (key === "lastApi") return caller.lastApi ?? "";
   return Number(caller[key]) || 0;
 }
 
@@ -211,6 +244,7 @@ function rowHtml(caller, currency) {
           caller.lastSeenAt,
         )}</div>
       </td>
+      <td data-label="协议">${apiBadge(caller.lastApi)}</td>
       <td class="num" data-label="请求">${fmtInt(caller.requests)}</td>
       <td class="num" data-label="失败">${caller.failures > 0 ? `<span class="status-text" data-tone="hold">${fmtInt(caller.failures)}</span>` : "0"}</td>
       <td class="num" data-label="切换">${fmtInt(caller.failovers)}</td>
@@ -235,7 +269,7 @@ function rowHtml(caller, currency) {
   return (
     row +
     `<tr class="table-detail">
-      <td colspan="10">
+      <td colspan="11">
         <div class="detail-strip">
           <span>输入（新增） <strong>${fmtInt(input)}</strong></span>
           <span>缓存命中 <strong>${fmtInt(caller.cachedPromptTokens)}</strong></span>
@@ -247,6 +281,7 @@ function rowHtml(caller, currency) {
           <span>首次出现 <strong>${fmtDateTime(caller.firstSeenAt)}</strong></span>
           <span>最近请求 <strong>${fmtDateTime(caller.lastSeenAt)}</strong></span>
           <span>最近模型 <strong>${esc(caller.lastModel || "—")}</strong></span>
+          <span>最近协议 <strong>${esc(caller.lastApi ? API_LABELS[caller.lastApi] ?? caller.lastApi : "—")}</strong></span>
         </div>
       </td>
     </tr>`
@@ -257,7 +292,7 @@ function dataSignature(rows) {
   return rows
     .map(
       (caller) =>
-        `${caller.id}:${caller.requests}:${caller.failures}:${caller.failovers}:${caller.promptTokens}:${caller.cachedPromptTokens}:${caller.cacheTrackedPromptTokens}:${caller.completionTokens}:${caller.cost}:${caller.lastSeenAt}`,
+        `${caller.id}:${caller.requests}:${caller.failures}:${caller.failovers}:${caller.promptTokens}:${caller.cachedPromptTokens}:${caller.cacheTrackedPromptTokens}:${caller.completionTokens}:${caller.cost}:${caller.lastSeenAt}:${caller.lastApi ?? ""}`,
     )
     .join("|");
 }

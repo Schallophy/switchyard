@@ -27,13 +27,40 @@ const POLL_MS = 2000;
 const root = document.getElementById("view");
 const gatewayDot = document.getElementById("gateway-dot");
 const gatewayState = document.getElementById("gateway-state");
+const headProto = document.getElementById("head-proto");
 const footEndpoint = document.getElementById("foot-endpoint");
 const footVersion = document.getElementById("foot-version");
+
+const API_LABELS = {
+  chat: "Chat",
+  completions: "Completions",
+  responses: "Responses",
+  embeddings: "Embeddings",
+};
+
+const API_TITLES = {
+  chat: "Chat Completions（/v1/chat/completions）",
+  completions: "Completions（/v1/completions，旧版文本补全）",
+  responses: "Responses（/v1/responses）",
+  embeddings: "Embeddings（/v1/embeddings）",
+};
 
 let handle = null;
 let route = null;
 let pollTimer = null;
 let tickTimer = null;
+
+/** 最近一次请求走的协议：取 lastUsedAt 最新的那个。 */
+function latestProtocol(apis) {
+  if (!apis || typeof apis !== "object") return null;
+  let latest = null;
+  for (const [kind, stat] of Object.entries(apis)) {
+    const at = stat?.lastUsedAt ? Date.parse(stat.lastUsedAt) : Number.NaN;
+    if (!Number.isFinite(at)) continue;
+    if (!latest || at > latest.at) latest = { kind, at };
+  }
+  return latest?.kind ?? null;
+}
 
 function paintShell() {
   const data = store.data;
@@ -44,7 +71,16 @@ function paintShell() {
     gatewayState.title = store.lastError?.message || "";
     footEndpoint.textContent = "—";
     footVersion.textContent = "—";
+    headProto.hidden = true;
     return;
+  }
+
+  const protocol = latestProtocol(data.stats?.apis);
+  headProto.hidden = protocol === null;
+  if (protocol) {
+    headProto.textContent = API_LABELS[protocol] ?? protocol;
+    headProto.dataset.api = protocol;
+    headProto.title = `最近一次请求：${API_TITLES[protocol] ?? protocol}`;
   }
 
   if (store.connection) {

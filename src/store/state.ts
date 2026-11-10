@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import type { ApiKind } from "../config/schema.ts";
 import type { CallerIdentity } from "../core/caller.ts";
 import type { ModelRecord, Usage } from "../types.ts";
 import { familyOf } from "../util/model.ts";
@@ -11,6 +12,19 @@ export interface CatalogEntry {
   provider?: string;
 }
 
+export interface ApiStat {
+  requests: number;
+  promptTokens: number;
+  cachedPromptTokens: number;
+  cacheTrackedPromptTokens: number;
+  completionTokens: number;
+  cost: number;
+  lastModel: string | null;
+  lastUsedAt: string | null;
+}
+
+export type ApiStats = Record<ApiKind, ApiStat>;
+
 export interface Stats {
   startedAt: string;
   requests: number;
@@ -20,6 +34,8 @@ export interface Stats {
   cacheTrackedPromptTokens: number;
   completionTokens: number;
   cost: number;
+  /** 按协议（chat / completions / responses / embeddings）拆分。 */
+  apis: ApiStats;
 }
 
 export interface CallerRecord {
@@ -36,6 +52,8 @@ export interface CallerRecord {
   firstSeenAt: string;
   lastSeenAt: string;
   lastModel: string | null;
+  /** 最近一次请求走的协议。 */
+  lastApi: ApiKind | null;
 }
 
 export interface CalibrationBucket {
@@ -89,6 +107,28 @@ function blankRecord(code: string): ModelRecord {
   };
 }
 
+function blankApiStat(): ApiStat {
+  return {
+    requests: 0,
+    promptTokens: 0,
+    cachedPromptTokens: 0,
+    cacheTrackedPromptTokens: 0,
+    completionTokens: 0,
+    cost: 0,
+    lastModel: null,
+    lastUsedAt: null,
+  };
+}
+
+function blankApis(): ApiStats {
+  return {
+    chat: blankApiStat(),
+    completions: blankApiStat(),
+    responses: blankApiStat(),
+    embeddings: blankApiStat(),
+  };
+}
+
 function blankCaller(caller: CallerIdentity, at: string): CallerRecord {
   return {
     id: caller.id,
@@ -104,6 +144,7 @@ function blankCaller(caller: CallerIdentity, at: string): CallerRecord {
     firstSeenAt: at,
     lastSeenAt: at,
     lastModel: null,
+    lastApi: null,
   };
 }
 
@@ -123,6 +164,7 @@ function blankState(): PersistedState {
       cacheTrackedPromptTokens: 0,
       completionTokens: 0,
       cost: 0,
+      apis: blankApis(),
     },
   };
 }
@@ -202,10 +244,11 @@ export class StateStore {
     this.saveSoon();
   }
 
-  markUsed(code: string, usage: Usage | null, cost = 0): void {
+  markUsed(code: string, usage: Usage | null, cost = 0, api: ApiKind = "chat"): void {
     const record = this.#data.models[code] ?? blankRecord(code);
     const cached = usage?.cachedPromptTokens ?? 0;
     const tracked = usage?.cacheReported ? usage.promptTokens : 0;
+    const now = new Date().toISOString();
     this.#data.models[code] = {
       ...record,
       health: "alive",
@@ -213,8 +256,8 @@ export class StateStore {
       lastStatusCode: null,
       lastErrorCode: null,
       lastErrorMessage: null,
-      checkedAt: new Date().toISOString(),
-      lastUsedAt: new Date().toISOString(),
+      checkedAt: now,
+      lastUsedAt: now,
       requests: record.requests + 1,
       throttledUntil: null,
       promptTokens: record.promptTokens + (usage?.promptTokens ?? 0),
@@ -229,7 +272,17 @@ export class StateStore {
       this.#data.stats.cacheTrackedPromptTokens += tracked;
       this.#data.stats.completionTokens += usage.completionTokens;
       this.#data.stats.cost += cost;
+
+      const stat = this.#data.stats.apis[api];
+      stat.promptTokens += usage.promptTokens;
+      stat.cachedPromptTokens += cached;
+      stat.cacheTrackedPromptTokens += tracked;
+      stat.completionTokens += usage.completionTokens;
+      stat.cost += cost;
     }
+    const stat = this.#data.stats.apis[api];
+    stat.lastModel = code;
+    stat.lastUsedAt = now;
     this.saveSoon();
   }
 
@@ -239,12 +292,13 @@ export class StateStore {
     this.saveSoon();
   }
 
-  addUsage(code: string, usage: Usage, cost = 0): void {
+  addUsage(code: string, usage: Usage, cost = 0, api: ApiKind = "chat"): void {
     const record = this.#data.models[code] ?? blankRecord(code);
     const tracked = usage.cacheReported ? usage.promptTokens : 0;
+    const now = new Date().toISOString();
     this.#data.models[code] = {
       ...record,
-      lastUsedAt: new Date().toISOString(),
+      lastUsedAt: now,
       promptTokens: record.promptTokens + usage.promptTokens,
       cachedPromptTokens: record.cachedPromptTokens + usage.cachedPromptTokens,
       cacheTrackedPromptTokens: record.cacheTrackedPromptTokens + tracked,
@@ -256,12 +310,21 @@ export class StateStore {
     this.#data.stats.cacheTrackedPromptTokens += tracked;
     this.#data.stats.completionTokens += usage.completionTokens;
     this.#data.stats.cost += cost;
+
+    const stat = this.#data.stats.apis[api];
+    stat.promptTokens += usage.promptTokens;
+    stat.cachedPromptTokens += usage.cachedPromptTokens;
+    stat.cacheTrackedPromptTokens += tracked;
+    stat.completionTokens += usage.completionTokens;
+    stat.cost += cost;
+    stat.lastModel = code;
+    stat.lastUsedAt = now;
     this.saveSoon();
   }
 
   recordCallerRequest(
     caller: CallerIdentity,
-    patch: { ok: boolean; failovers: number; model: string | null },
+    patch: { ok: boolean; failovers: number; model: string | null; api?: ApiKind },
   ): void {
     const now = new Date().toISOString();
     const record = this.#data.callers[caller.id] ?? blankCaller(caller, now);
@@ -273,11 +336,12 @@ export class StateStore {
       failovers: record.failovers + Math.max(0, patch.failovers),
       lastSeenAt: now,
       lastModel: patch.model ?? record.lastModel,
+      lastApi: patch.api ?? "chat",
     };
     this.saveSoon();
   }
 
-  addCallerUsage(caller: CallerIdentity, usage: Usage | null, model: string, cost = 0): void {
+  addCallerUsage(caller: CallerIdentity, usage: Usage | null, model: string, cost = 0, api: ApiKind = "chat"): void {
     const now = new Date().toISOString();
     const record = this.#data.callers[caller.id] ?? blankCaller(caller, now);
     const cached = usage?.cachedPromptTokens ?? 0;
@@ -292,6 +356,7 @@ export class StateStore {
       cost: record.cost + cost,
       lastSeenAt: now,
       lastModel: model,
+      lastApi: api,
     };
     this.saveSoon();
   }
@@ -325,8 +390,12 @@ export class StateStore {
     this.saveSoon();
   }
 
-  bumpRequests(): void {
+  bumpRequests(api: ApiKind = "chat"): void {
+    const now = new Date().toISOString();
     this.#data.stats.requests += 1;
+    const stat = this.#data.stats.apis[api];
+    stat.requests += 1;
+    stat.lastUsedAt = now;
     this.saveSoon();
   }
 
@@ -348,6 +417,9 @@ export class StateStore {
     for (const caller of Object.values(this.#data.callers)) {
       caller.cost = costFor(caller.lastModel, caller);
     }
+    for (const stat of Object.values(this.#data.stats.apis)) {
+      stat.cost = costFor(stat.lastModel, stat);
+    }
     this.#data.stats.cost = total;
     this.saveSoon();
   }
@@ -363,6 +435,7 @@ export class StateStore {
       cacheTrackedPromptTokens: 0,
       completionTokens: 0,
       cost: 0,
+      apis: blankApis(),
     };
     for (const [code, record] of Object.entries(this.#data.models)) {
       this.#data.models[code] = {
@@ -443,6 +516,7 @@ function hydrate(source: Record<string, unknown>): PersistedState {
       cacheTrackedPromptTokens: numberOr(record.cacheTrackedPromptTokens, 0),
       completionTokens: numberOr(record.completionTokens, 0),
       cost: numberOr(record.cost, 0),
+      apis: hydrateApis(record.apis),
     };
   }
 
@@ -465,6 +539,7 @@ function hydrate(source: Record<string, unknown>): PersistedState {
         firstSeenAt: typeof record.firstSeenAt === "string" ? record.firstSeenAt : base.stats.startedAt,
         lastSeenAt: typeof record.lastSeenAt === "string" ? record.lastSeenAt : base.stats.startedAt,
         lastModel: typeof record.lastModel === "string" ? record.lastModel : null,
+        lastApi: isApiKindValue(record.lastApi) ? record.lastApi : null,
       };
     }
   }
@@ -516,6 +591,31 @@ function hydrate(source: Record<string, unknown>): PersistedState {
 
 function numberOr(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function isApiKindValue(value: unknown): value is ApiKind {
+  return value === "chat" || value === "completions" || value === "responses" || value === "embeddings";
+}
+
+function hydrateApis(raw: unknown): ApiStats {
+  const apis = blankApis();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return apis;
+  for (const kind of Object.keys(apis) as ApiKind[]) {
+    const value = (raw as Record<string, unknown>)[kind];
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const record = value as Record<string, unknown>;
+    apis[kind] = {
+      requests: numberOr(record.requests, 0),
+      promptTokens: numberOr(record.promptTokens, 0),
+      cachedPromptTokens: numberOr(record.cachedPromptTokens, 0),
+      cacheTrackedPromptTokens: numberOr(record.cacheTrackedPromptTokens, 0),
+      completionTokens: numberOr(record.completionTokens, 0),
+      cost: numberOr(record.cost, 0),
+      lastModel: typeof record.lastModel === "string" ? record.lastModel : null,
+      lastUsedAt: typeof record.lastUsedAt === "string" ? record.lastUsedAt : null,
+    };
+  }
+  return apis;
 }
 
 const MIN_CALIBRATION_RATIO = 0.2;

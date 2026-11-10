@@ -751,3 +751,13 @@ dialog.sheet .dialog-foot {
 .status-text[data-tone="idle"] {
   color: var(--ink-faint);
 }
+.api-badge {
+  display: inline-block;
+  padding: 0 6px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
