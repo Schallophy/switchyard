@@ -78,7 +78,7 @@ function proxy(ctx: Ctx, runtime: Runtime, path: string): Promise<void> {
   ctx.res.on("close", abort);
 
   return runtime
-    .requestThrough({ path, model: requested, body: forward, signal: controller.signal })
+    .requestThrough({ path, model: requested, body: forward, signal: controller.signal, caller })
     .then(async ({ result, sample }) => {
       runtime.recordOutcome(result, caller);
 

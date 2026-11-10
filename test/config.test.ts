@@ -338,3 +338,21 @@ test("pricing rejects malformed clock values", () => {
   assert.equal(result.ok, false);
   assert.ok(result.errors.some((error) => error.includes("HH:MM")));
 });
+
+test("responses chaining defaults to off and validates its limits", () => {
+  const defaults = normalizeConfig(defaultConfig());
+  assert.equal(defaults.ok, true);
+  assert.deepEqual(defaults.config.responsesChaining, { enabled: false, ttlMinutes: 120, maxSessions: 500 });
+
+  const raw = JSON.parse(JSON.stringify(defaultConfig())) as Record<string, any>;
+  raw.responsesChaining = { enabled: true, ttlMinutes: 30, maxSessions: 42 };
+  const enabled = normalizeConfig(raw);
+  assert.equal(enabled.ok, true);
+  assert.deepEqual(enabled.config.responsesChaining, { enabled: true, ttlMinutes: 30, maxSessions: 42 });
+
+  raw.responsesChaining = { enabled: true, ttlMinutes: 0, maxSessions: 0 };
+  const broken = normalizeConfig(raw);
+  assert.equal(broken.ok, false);
+  assert.ok(broken.errors.some((error) => error.includes("responsesChaining.ttlMinutes")));
+  assert.ok(broken.errors.some((error) => error.includes("responsesChaining.maxSessions")));
+});

@@ -98,6 +98,15 @@ export interface PricingConfig {
   models: Record<string, ModelPricing>;
 }
 
+export interface ResponsesChainingConfig {
+  /** 开启后，/v1/responses 会复用平台侧会话，只发送新增内容。 */
+  enabled: boolean;
+  /** response id 的保留时间（分钟）。 */
+  ttlMinutes: number;
+  /** 内存中最多保留多少个会话前缀。 */
+  maxSessions: number;
+}
+
 export const DEFAULT_PRICING_CURRENCY = "CNY";
 export const DEFAULT_PRICING_UNIT = 1_000_000;
 
@@ -117,6 +126,7 @@ export interface GatewayConfig {
   defaultProvider: string;
   failover: FailoverConfig;
   pricing: PricingConfig;
+  responsesChaining: ResponsesChainingConfig;
 }
 
 export interface NormalizeResult {
@@ -181,6 +191,11 @@ export function defaultConfig(): GatewayConfig {
       currency: DEFAULT_PRICING_CURRENCY,
       unit: DEFAULT_PRICING_UNIT,
       models: {},
+    },
+    responsesChaining: {
+      enabled: false,
+      ttlMinutes: 120,
+      maxSessions: 500,
     },
   };
 }
@@ -603,6 +618,21 @@ function readPricing(source: Obj, errors: string[]): PricingConfig {
   return pricing;
 }
 
+function readResponsesChaining(source: Obj, errors: string[]): ResponsesChainingConfig {
+  const defaults: ResponsesChainingConfig = { enabled: false, ttlMinutes: 120, maxSessions: 500 };
+  if (source.responsesChaining === undefined) return defaults;
+  if (!isObj(source.responsesChaining)) {
+    errors.push("responsesChaining 必须是对象");
+    return defaults;
+  }
+  const raw = source.responsesChaining;
+  return {
+    enabled: readBool(raw, "enabled", defaults.enabled),
+    ttlMinutes: readNumber(raw, "ttlMinutes", defaults.ttlMinutes, 1, 1_440, "responsesChaining.ttlMinutes", errors),
+    maxSessions: Math.trunc(readNumber(raw, "maxSessions", defaults.maxSessions, 1, 10_000, "responsesChaining.maxSessions", errors)),
+  };
+}
+
 export function normalizeConfig(input: unknown): NormalizeResult {
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -669,6 +699,7 @@ export function normalizeConfig(input: unknown): NormalizeResult {
   };
 
   config.pricing = readPricing(source, errors);
+  config.responsesChaining = readResponsesChaining(source, errors);
 
   return { ok: errors.length === 0, config, errors, warnings };
 }

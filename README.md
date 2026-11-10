@@ -259,6 +259,11 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
         ]
       }
     }
+  },
+  "responsesChaining": {
+    "enabled": false,             // 仅对 /v1/responses 生效
+    "ttlMinutes": 120,
+    "maxSessions": 500
   }
 }
 ```
@@ -288,6 +293,9 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 | `pricing.currency` | 成本展示币种：`CNY` / `USD` / `EUR` / `GBP` / `JPY` / `KRW`，其他值按代码前缀显示 |
 | `pricing.unit` | 单价的 token 基数，默认 `1000000`（每百万 token） |
 | `pricing.models.<code>.tiers[]` | 分时段价格：`from` / `to`（本地时间 `HH:MM`，`from == to` 表示全天）、`input`、`cachedInput`、`output`。时间段必须覆盖一整天；`"*"` 可作为所有模型的兜底 |
+| `responsesChaining.enabled` | 开启后 `/v1/responses` 会复用提供商的会话状态，只发送新增内容；默认关闭 |
+| `responsesChaining.ttlMinutes` | response id 的保留时间（分钟），默认 `120` |
+| `responsesChaining.maxSessions` | 内存中最多保留多少个会话前缀，默认 `500` |
 
 ### 环境变量
 
@@ -314,6 +322,23 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 - 只统计成功请求；提供商没返回 `usage` 的请求不计成本；
 - 不包含缓存写入费、免费额度、折扣、税与汇率；高上下文分档计价也无法按请求回拆；
 - 修改单价只影响之后的累计，不会重算已经记账的历史金额。历史数据可以用 `POST /api/usage/backfill-cost` 指定一个 `at` 时间（ISO 格式），按该时刻命中的价格档重算：模型与总计按各自 token 计算，调用方按最近使用的模型计价（单一模型或同价模型时准确）。
+
+### Responses 会话续接
+
+`responsesChaining.enabled = true` 时，网关会在 `/v1/responses` 上做「增量发送」：
+
+1. 用调用方、提供商、模型和工具集划定作用域，对 `input` 逐项做前缀哈希；
+2. 命中之前的响应时，去掉客户端重复发来的 assistant / function_call / reasoning 项，只保留新增的 user 或工具结果；
+3. 补上 `previous_response_id` 和 `store: true` 后转发；
+4. 上游 SSE 原样透传，只旁路抓取 `response.created` 里的 id 存入内存。
+
+约束与回退：
+
+- 需要客户端使用 Responses API，并让模型在 `modelApis` 里声明 `responses`；
+- 会话内容会保存在提供商侧（`store: true`），保留期由提供商决定；
+- 进程重启、条目过期、前缀不匹配、切换模型/提供商或工具集变化时，自动退回全量请求；
+- 只有成功响应才记录 id；`previous_response_id` 失效（400/404）时会清掉缓存并全量重试一次；
+- 缓存只存在内存里，不写入 `state.json`。
 
 ## 看板
 

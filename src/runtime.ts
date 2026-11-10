@@ -5,6 +5,14 @@ import { apisFor as resolveApis, apiKindForPath, supportsApi as checkApi } from 
 import { EventLog } from "./core/events.ts";
 import { runFailover, type FailoverHooks, type FailoverResult } from "./core/failover.ts";
 import { priceTierAt, usageCost } from "./core/pricing.ts";
+import {
+  ResponseChainStore,
+  captureResponseId,
+  chainDelta,
+  chainScope,
+  itemsPrefixHashes,
+  responsesInputItems,
+} from "./core/responses-chain.ts";
 import { activeModel, isDeadRetryDue, resolveRoute, selectCandidates } from "./core/selection.ts";
 import { StateStore } from "./store/state.ts";
 import type { AttemptRecord, AttemptOutcome, ModelRecord, NormalizedError, Usage } from "./types.ts";
@@ -98,6 +106,7 @@ export class Runtime {
   #bootedAt = new Date();
   #catalogError: string | null = null;
   #warnings: string[];
+  #responsesChain = new ResponseChainStore();
 
   private constructor(options: RuntimeOptions, store: StateStore) {
     this.config = options.config;
@@ -318,6 +327,7 @@ export class Runtime {
     body: Record<string, unknown>;
     signal?: AbortSignal;
     maxAttempts?: number;
+    caller?: CallerIdentity;
   }): Promise<RoutedResult> {
     const api = apiKindForPath(input.path);
     const chain = this.config.chain;
@@ -419,21 +429,96 @@ export class Runtime {
       }
     }
 
-    const attempt = (model: string, signal?: AbortSignal): Promise<AttemptOutcome> =>
-      this.client.attempt(input.path, model, input.body, {
-        signal,
-        providerId: this.providerIdFor(model),
-      });
+    const chaining = this.config.responsesChaining;
+    const chainEnabled =
+      chaining.enabled &&
+      input.path === "responses" &&
+      candidates.length > 0 &&
+      input.body.previous_response_id === undefined;
 
-    const result = await runFailover({
+    let forwardBody = input.body;
+    let chainItems: unknown[] | null = null;
+    let chainHitKey: string | null = null;
+
+    if (chainEnabled) {
+      const items = responsesInputItems(input.body.input);
+      if (items) {
+        const scope = chainScope(
+          (input.caller ?? ANONYMOUS_CALLER).id,
+          this.providerIdFor(candidates[0] ?? "") ?? this.config.defaultProvider,
+          candidates[0] ?? "",
+          input.body.tools ?? null,
+        );
+        const hashes = itemsPrefixHashes(scope, items);
+        for (let index = hashes.length - 1; index >= 0; index -= 1) {
+          const key = hashes[index];
+          if (!key) continue;
+          const id = this.#responsesChain.lookup(key);
+          if (!id) continue;
+          const delta = chainDelta(items, index + 1);
+          if (!delta) continue;
+          forwardBody = { ...input.body, input: delta, previous_response_id: id, store: true };
+          chainHitKey = key;
+          break;
+        }
+        // 首轮也要让提供商保存，下一轮才能续接
+        if (!chainHitKey) forwardBody = { ...input.body, store: true };
+        chainItems = items;
+      }
+    }
+
+    const attemptWith =
+      (body: Record<string, unknown>) =>
+      (model: string, signal?: AbortSignal): Promise<AttemptOutcome> =>
+        this.client.attempt(input.path, model, body, {
+          signal,
+          providerId: this.providerIdFor(model),
+        });
+
+    let result = await runFailover({
       candidates,
       maxAttempts: input.maxAttempts ?? this.config.failover.maxAttempts,
-      attempt,
+      attempt: attemptWith(forwardBody),
       signal: input.signal,
       hooks: this.hooks(),
     });
+    let chainServed = Boolean(chainHitKey);
 
-    return { result, sample };
+    // response id 过期或无效时，退回全量请求重试一次
+    if (chainHitKey && !result.ok && (result.error.status === 400 || result.error.status === 404)) {
+      this.#responsesChain.delete(chainHitKey);
+      chainHitKey = null;
+      chainServed = false;
+      result = await runFailover({
+        candidates,
+        maxAttempts: input.maxAttempts ?? this.config.failover.maxAttempts,
+        attempt: attemptWith({ ...input.body, store: true }),
+        signal: input.signal,
+        hooks: this.hooks(),
+      });
+    }
+
+    if (chainEnabled && result.ok && chainItems) {
+      const scope = chainScope(
+        (input.caller ?? ANONYMOUS_CALLER).id,
+        result.provider ?? this.providerIdFor(result.model) ?? this.config.defaultProvider,
+        result.model,
+        input.body.tools ?? null,
+      );
+      const hashes = itemsPrefixHashes(scope, chainItems);
+      const key = hashes[hashes.length - 1];
+      if (key) {
+        const ttl = chaining.ttlMinutes * 60_000;
+        const max = chaining.maxSessions;
+        const response = captureResponseId(result.response, (id) => {
+          this.#responsesChain.remember(key, id, ttl, max);
+        });
+        result = { ...result, response };
+      }
+    }
+
+    // 链式请求的上游 prompt 只是增量，不能用它校准「全量输入」的估算
+    return { result, sample: chainServed ? null : sample };
   }
 
   recordOutcome(result: FailoverResult, caller: CallerIdentity = ANONYMOUS_CALLER): void {
