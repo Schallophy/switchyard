@@ -1,0 +1,13 @@
+字体来源与许可 / Fonts notice
+================================
+
+这里只放了两款无衬线字体的 latin / latin-ext 子集（woff2），供看板离线使用。
+中文不打包，交给系统字体（Noto Sans SC / PingFang SC / 微软雅黑）。
+
+1) Geist、Geist Mono
+   Copyright 2024 The Geist Project Authors
+   https://github.com/vercel/geist-font
+   SIL Open Font License 1.1
+
+OFL 1.1 全文见同目录的 OFL.txt（Geist 的版权行，许可条款对以上两款字体相同）。
+未经许可不得单独转售这些字体文件；随本程序一起分发不受限制。

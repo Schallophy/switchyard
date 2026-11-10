@@ -1,0 +1,168 @@
+.shell-head {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 40px;
+  height: var(--head-height);
+  padding: 0 32px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--rule);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+}
+
+.brand svg {
+  display: block;
+  color: var(--ink);
+}
+
+.nav {
+  display: flex;
+  align-self: stretch;
+  gap: 28px;
+}
+
+.nav a {
+  display: inline-flex;
+  align-items: center;
+  height: 100%;
+  margin-bottom: -1px;
+  border-bottom: 2px solid transparent;
+  color: var(--ink-soft);
+  font-size: 14px;
+  text-decoration: none;
+  transition: color var(--fast) var(--ease), border-color var(--fast) var(--ease);
+}
+
+.nav a:hover {
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.nav a[aria-current="page"] {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+}
+
+.head-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.head-state strong {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.state-dot {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--ink-faint);
+}
+
+.state-dot[data-state="ok"] {
+  background: var(--go);
+}
+
+.state-dot[data-state="bad"] {
+  background: var(--stop);
+}
+
+.state-dot[data-state="warn"] {
+  background: var(--hold);
+}
+
+.shell-main {
+  width: 100%;
+  max-width: var(--max-width);
+  min-height: calc(100dvh - var(--head-height) - 60px);
+  margin: 0 auto;
+  padding: 36px 32px 64px;
+}
+
+.shell-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: 14px 32px 28px;
+  border-top: 1px solid var(--rule-soft);
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.foot-endpoint {
+  font-family: var(--font-mono);
+  color: var(--ink);
+  word-break: break-all;
+}
+
+.foot-gap {
+  margin-left: auto;
+}
+
+.link-btn {
+  color: var(--ink-soft);
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--rule);
+}
+
+.link-btn:hover {
+  color: var(--ink);
+  text-decoration-color: currentColor;
+}
+
+@media (max-width: 720px) {
+  .shell-head {
+    gap: 20px;
+    padding: 0 16px;
+  }
+
+  .brand span {
+    display: none;
+  }
+
+  .nav {
+    gap: 20px;
+    overflow-x: auto;
+  }
+
+  .head-uptime {
+    display: none;
+  }
+
+  .shell-main {
+    padding: 24px 16px 48px;
+  }
+
+  .shell-foot {
+    flex-wrap: wrap;
+    padding: 14px 16px 24px;
+  }
+
+  .foot-gap {
+    display: none;
+  }
+}

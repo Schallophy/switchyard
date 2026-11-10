@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>模型 · Switchyard</title>
+    <link rel="icon" href="/favicon.svg" />
+    <link rel="stylesheet" href="/fonts.css" />
+    <link rel="stylesheet" href="/styles/tokens.css" />
+    <link rel="stylesheet" href="/styles/base.css" />
+    <link rel="stylesheet" href="/styles/shell.css" />
+    <link rel="stylesheet" href="/styles/components.css" />
+    <link rel="stylesheet" href="/styles/views.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">跳到主要内容</a>
+
+    <header class="shell-head">
+      <a class="brand" href="#/models" aria-label="Switchyard 模型">
+        <svg viewBox="0 0 28 28" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true">
+          <circle cx="6" cy="14" r="2.2" />
+          <circle cx="14" cy="6" r="2.2" />
+          <circle cx="14" cy="22" r="2.2" />
+          <circle cx="22" cy="14" r="2.2" />
+          <path d="M8.1 12.9 11.9 7.5M8.1 15.1l3.8 5.4M16.1 7.5l3.8 5.4M16.1 20.5l3.8-5.4" />
+        </svg>
+        <span>Switchyard</span>
+      </a>
+
+      <nav class="nav" aria-label="主导航">
+        <a href="#/models" data-nav="models">模型</a>
+        <a href="#/usage" data-nav="usage">用量</a>
+        <a href="#/events" data-nav="events">事件</a>
+        <a href="#/settings" data-nav="settings">设置</a>
+      </nav>
+
+      <div class="head-state">
+        <span class="state-dot" id="gateway-dot"></span>
+        <span id="gateway-state">连接中</span>
+      </div>
+    </header>
+
+    <main class="shell-main" id="main">
+      <div id="view" class="view"></div>
+    </main>
+
+    <footer class="shell-foot">
+      <span class="foot-endpoint" id="foot-endpoint">—</span>
+      <button class="link-btn" type="button" data-action="copy-endpoint">复制接入地址</button>
+      <span class="foot-gap"></span>
+      <span id="foot-version">—</span>
+    </footer>
+
+    <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+    <script type="module" src="/js/main.js"></script>
+  </body>
+</html>
