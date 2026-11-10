@@ -37,6 +37,7 @@ export function registerOpenAIRoutes(router: Router, runtime: Runtime): void {
         context_length: chain.context.window,
         apis: runtime.apisFor(code),
         provider: runtime.providerIdFor(code),
+        upstream: runtime.upstreamModelFor(code),
         active: code === active,
       });
     }

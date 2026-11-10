@@ -227,7 +227,7 @@ test("legacy state without cache fields still opens", async () => {
   }
 });
 
-test("catalog entries keep their provider across reopen", async () => {
+test("catalog keeps provider-bound codes, including duplicate names", async () => {
   const dir = await mkdtemp(join(tmpdir(), "switchyard-state-"));
   try {
     const file = join(dir, "state.json");
@@ -235,38 +235,71 @@ test("catalog entries keep their provider across reopen", async () => {
     store.setCatalog([
       { id: "alpha-model", provider: "alpha" },
       { id: "beta-model", provider: "beta" },
-      { id: "plain-model" },
+      { id: "same-model", provider: "alpha" },
+      { id: "same-model", provider: "beta" },
     ]);
     await store.flush();
 
     const reopened = await StateStore.open({ file, codes: [] });
-    const byId = new Map(reopened.catalog.models.map((entry) => [entry.id, entry.provider]));
-    assert.equal(byId.get("alpha-model"), "alpha");
-    assert.equal(byId.get("beta-model"), "beta");
-    assert.equal(byId.get("plain-model"), undefined);
+    const byCode = new Map(reopened.catalog.models.map((entry) => [entry.code, entry.provider]));
+    assert.equal(byCode.get("alpha/alpha-model"), "alpha");
+    assert.equal(byCode.get("beta/beta-model"), "beta");
+    assert.equal(byCode.get("alpha/same-model"), "alpha");
+    assert.equal(byCode.get("beta/same-model"), "beta");
+    assert.equal(reopened.catalog.models.length, 4);
+    assert.equal(reopened.catalog.models.find((entry) => entry.code === "beta/same-model")?.upstream, "same-model");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("a legacy catalog entry with provider is still readable", async () => {
+test("a legacy catalog entry without code is rebuilt from id + provider", async () => {
   const dir = await mkdtemp(join(tmpdir(), "switchyard-state-"));
   try {
     const file = join(dir, "state.json");
     const seed = await StateStore.open({ file, codes: [] });
-    seed.setCatalog([{ id: "legacy-model", provider: "alpha" }]);
     await seed.flush();
 
     const { readFile, writeFile } = await import("node:fs/promises");
     const raw = JSON.parse(await readFile(file, "utf8")) as Record<string, any>;
-    raw.catalog.models = raw.catalog.models.map((entry: Record<string, unknown>) => {
-      const { provider, ...rest } = entry;
-      return { ...rest, provider: provider };
-    });
+    raw.catalog = {
+      fetchedAt: null,
+      models: [{ id: "legacy-model", family: "Other", provider: "alpha" }],
+    };
     await writeFile(file, JSON.stringify(raw), "utf8");
 
     const reopened = await StateStore.open({ file, codes: [] });
-    assert.equal(reopened.catalog.models[0]?.provider, "alpha");
+    const entry = reopened.catalog.models[0];
+    assert.equal(entry?.code, "alpha/legacy-model");
+    assert.equal(entry?.upstream, "legacy-model");
+    assert.equal(entry?.provider, "alpha");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("legacy bare model records merge into provider-bound codes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "switchyard-state-"));
+  try {
+    const file = join(dir, "state.json");
+    const seed = await StateStore.open({ file, codes: [] });
+    seed.markUsed(
+      "old-model",
+      { promptTokens: 10, completionTokens: 5, totalTokens: 15, cachedPromptTokens: 0, cacheReported: true },
+      0.25,
+    );
+    seed.observeCalibration("old-model", false, 1000, 1200);
+    await seed.flush();
+
+    const reopened = await StateStore.open({ file, codes: [] });
+    reopened.migrateModelCodes((code) => (code === "old-model" ? "qianwenai/old-model" : null));
+
+    const record = reopened.get("qianwenai/old-model");
+    assert.equal(reopened.get("old-model"), undefined);
+    assert.equal(record?.requests, 1);
+    assert.equal(record?.promptTokens, 10);
+    assert.equal(record?.cost, 0.25);
+    assert.equal(reopened.calibrationRatio("qianwenai/old-model", false), 1.2);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

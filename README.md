@@ -15,7 +15,7 @@ Switchyard 不绑定任何厂商。默认提供商是阿里云百炼（DashScope
 - **健康状态机**：`unknown → alive / dead / invalid`，限流进入冷却而不污染健康状态；重启后状态持久化。
 - **管理看板**：模型、用量、事件、设置四个页面，主题始终跟随系统深浅色，全部本地访问。
 - **两条等价的配置路径**：有看板的部署可以把模型列表、提供商、随机参数全部在界面上配置；`ui.enabled=false` 时看板彻底关闭，所有配置只在 `config.json` 里，能力不缩水。
-- **多提供商**：`providers` 可以配任意多个 OpenAI 兼容端点，模型按 `modelProviders` 归属到不同厂商，跨提供商的故障转移照常工作。
+- **多提供商**：`providers` 可以配任意多个 OpenAI 兼容端点；每个模型绑定一个提供商（`提供商/模型名`），同名模型分属两个提供商时是两个独立模型，跨提供商的故障转移照常工作。
 - **Key 不是启动前提**：没有 Key 也能启动进程、打开看板、列出 `/v1/models`，缺 Key 只影响真正转发到那个提供商的请求。
 - **零运行时依赖**：Node 内置 `http` / `fetch` / `test`，TypeScript 直接运行，无构建步骤。
 - **离线可用**：看板不引用任何 CDN，Geist / Geist Mono 的拉丁子集（约 91 KB，SIL OFL）随程序一起分发，UI 全部使用无衬线字体，中文走系统字体。
@@ -55,9 +55,9 @@ Key 不是启动的硬性条件：进程、看板、`/v1/models` 都不需要它
 
 都没有时，路由到那个提供商的请求返回 `503 switchyard.no_key`，错误信息会点名是哪个提供商缺 Key。多个提供商互不影响——缺 Key 的提供商会让相关请求失败，其余提供商照常服务。
 
-### 多提供商
+### 多提供商与模型绑定
 
-`providers` 是一个数组，每个元素是一个 OpenAI 兼容端点；模型通过 `modelProviders` 选提供商，没登记的就走 `defaultProvider`：
+`providers` 是一个数组，每个元素是一个 OpenAI 兼容端点。**每个模型绑定到一个提供商**，标识写成 `提供商/模型名`：
 
 ```jsonc
 "providers": [
@@ -65,19 +65,22 @@ Key 不是启动的硬性条件：进程、看板、`/v1/models` 都不需要它
   { "id": "openai",   "label": "OpenAI",     "baseUrl": "https://api.openai.com/v1", "apiKeyEnv": "OPENAI_API_KEY" }
 ],
 "defaultProvider": "dashscope",
-"modelProviders": {
-  "gpt-4o-mini": "openai",
-  "qwen3.8-27b": "dashscope"
+"chain": {
+  "active": "dashscope/qwen3.8-27b",
+  "models": ["dashscope/qwen3.8-27b", "openai/gpt-4o-mini"]
 }
 ```
 
+- code 的第一段必须是已配置的提供商 id；转发时只把后面的模型名发给上游，前缀不会被发出去。
+- **同名模型挂在两个提供商下算两个模型**：`dashscope/qwen3.8-max` 和 `openai/qwen3.8-max` 各自有独立的用量、价格、健康状态和故障转移顺位。
+- `defaultProvider` 只用于真正透传的请求（客户端点名了列表里没有的模型），以及目录刷新时的默认目标。
+- 客户端可以继续写裸模型名：只有在模型列表里唯一匹配时才会命中对应模型，同名模型分属两个提供商时按透传处理（建议直接用完整 code）。
 - 模型列表里可以混排不同提供商的模型，故障转移顺序不变，跨提供商切换照样生效。
-- 响应头 `x-switchyard-provider` 会告诉你这次实际落在哪个提供商；`/v1/models` 的每个条目也带 `provider`。
+- 响应头 `x-switchyard-provider` 会告诉你这次实际落在哪个提供商；`/v1/models` 的每个条目带 `provider` 与 `upstream`。
 - 模型目录刷新按提供商分组执行，缺 Key 的提供商会被跳过而不是整体失败。
-- 同名模型在多个提供商都存在时，模型目录只记第一个声明它的提供商；实际走向仍由 `modelProviders` 决定。
 
 > 术语统一：配置键、响应头、`/v1/models`、看板全部用 **provider（提供商）**，和 Cline / OpenCode 这类客户端里的叫法一致。
-> 早期版本用过 `upstream`（`upstreams` / `defaultUpstream` / `modelUpstreams`），加载时会自动迁移并给出提示，不用手改。
+> 早期版本用过 `upstream`（`upstreams` / `defaultUpstream` / `modelUpstreams` / `modelProviders`），加载时会自动迁移并给出提示：`modelProviders` 会被并入模型 code，不用手改。
 
 
 ### 两种配置路径
@@ -218,19 +221,19 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
     "file": ""                  // 留空写入数据目录的 switchyard.log
   },
   "chain": {
-    "active": "qwen3.8-27b",      // 当前输出模型，必须在 models 里
+    "active": "dashscope/qwen3.8-27b",       // 当前输出模型，必须在 models 里
     "models": [
-      "qwen3.8-27b",              // 顺序即优先级，auto 从 active 开始回退
-      "kimi-k3.1-pro",
-      "qwen3.8-max-0902"
+      "dashscope/qwen3.8-27b",               // 顺序即优先级，auto 从 active 开始回退
+      "dashscope/kimi-k3.1-pro",
+      "dashscope/qwen3.8-max-0902"
     ],
     "context": { "window": 256000, "onOverflow": "reject" },
     "retryDeadAfterMinutes": 1440  // 失效模型多少分钟后自动重试；0 = 仅手动重置
   },
   "modelApis": {
-    "qwen3.8-max-0902": ["chat"],
-    "kimi-k3.1-pro": ["chat", "responses"],
-    "qwen3.8-27b": ["chat"]
+    "dashscope/qwen3.8-max-0902": ["chat"],
+    "dashscope/kimi-k3.1-pro": ["chat", "responses"],
+    "dashscope/qwen3.8-27b": ["chat"]
   },
   "providers": [
     {
@@ -244,7 +247,6 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
     }
   ],
   "defaultProvider": "dashscope",
-  "modelProviders": {},
   "failover": {
     "maxAttempts": 8,
     "throttleCooldownMs": 60000
@@ -253,7 +255,7 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
     "currency": "CNY",            // 展示币种
     "unit": 1000000,              // 单价按每百万 token
     "models": {
-      "deepseek-v4.1-flash-1017": {
+      "qianwenai/deepseek-v4.1-flash-1017": {
         "tiers": [
           { "from": "22:00", "to": "08:00", "input": 1, "cachedInput": 0.1, "output": 4 },
           { "from": "08:00", "to": "22:00", "input": 2, "cachedInput": 0.2, "output": 8 }
@@ -278,15 +280,14 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 | `ui.enabled` | `false` 时不再提供看板静态资源，配置只能走 `config.json` 与 `/api/config` |
 | `log.level` | `debug` / `info` / `warn` / `error`；`SWITCHYARD_LOG_LEVEL` 优先级更高 |
 | `log.file` | 日志文件路径，留空为 `<数据目录>/switchyard.log` |
-| `chain.active` | 当前输出模型；`auto` 请求从这里开始。必须在 `chain.models` 里，否则回落到第一个模型 |
-| `chain.models` | 候选模型列表，顺序即优先级；失败时按顺序回退 |
+| `chain.active` | 当前输出模型（`提供商/模型名`）；`auto` 请求从这里开始。必须在 `chain.models` 里，否则回落到第一个模型 |
+| `chain.models` | 候选模型列表，顺序即优先级；每项都绑定提供商，写成 `提供商/模型名` |
 | `chain.context.window` | 模型列表共用的上下文窗口，默认 `256000` |
 | `chain.context.onOverflow` | `reject`（默认，超限返回 400）或 `passthrough`（交给提供商） |
 | `chain.retryDeadAfterMinutes` | `dead` 模型自动重新参与选路的间隔（分钟），默认 `1440`（1 天）；`0` 表示只能手动重置。`invalid` 模型不会自动重试 |
-| `modelApis` | 每个模型支持的 API：`chat` / `responses` / `completions` / `embeddings`；未登记的模型默认 `["chat"]` |
+| `modelApis` | 每个模型（`提供商/模型名`）支持的 API：`chat` / `responses` / `completions` / `embeddings`；未登记的模型默认 `["chat"]` |
 | `providers[]` | 提供商列表：`id`（小写字母数字）、`label`、`baseUrl`、`apiKeyEnv`、`apiKey`、`requestTimeoutMs`、`injectStreamUsage` |
-| `defaultProvider` | 没有在 `modelProviders` 中登记的模型走这个提供商 |
-| `modelProviders` | 模型 → 提供商 id 的映射，覆盖默认提供商 |
+| `defaultProvider` | 仅用于透传请求（客户端点名了列表里没有的模型）与目录刷新的默认目标 |
 | `providers[].apiKeyEnv` | 读取 API Key 的环境变量名；优先级高于同项的 `apiKey` |
 | `providers[].injectStreamUsage` | 流式聊天请求未显式设置时自动注入 `stream_options.include_usage` |
 | `failover.maxAttempts` | 单次请求最多尝试的模型数 |
@@ -347,7 +348,7 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 
 | 页面 | 内容 |
 | --- | --- |
-| 模型 | 当前输出与状态、请求/切换/Token 统计、路由轨道（拖动或 `Alt+↑/↓` 调整优先级）、设为当前输出、重置状态、编辑 API 能力、指定提供商、批量移出、添加模型面板（目录搜索/筛选/刷新与手动填写）、发送测试、链路策略摘要与最近事件 |
+| 模型 | 当前输出与状态、请求/切换/Token 统计、路由轨道（拖动或 `Alt+↑/↓` 调整优先级）、设为当前输出、重置状态、编辑 API 能力、批量移出、添加模型面板（按提供商展示目录、搜索/筛选/刷新与手动填写模型名）、发送测试、链路策略摘要与最近事件 |
 | 用量 | 按调用方 API Key 汇总请求、失败、切换、真实输入/输出 Token、缓存命中率与按配置单价估算的成本，可分别排序并展开明细 |
 | 事件 | 切换、失效、限流、恢复、配置变更，可按类型过滤、关键词搜索、暂停实时刷新 |
 | 设置 | 网关、提供商、故障转移、服务、日志、数据、原始 JSON 的完整表单；「数据」分组可重置用量统计；底部保存栏统一提交 |
@@ -368,12 +369,11 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 | `PATCH` | `/api/chain` | 更新上下文：`{"context":{"window":256000,"onOverflow":"reject"}}` |
 | `POST` | `/api/chain/active` | 切换当前输出模型：`{"model":"qwen3.8-27b"}` |
 | `POST` | `/api/chain/order` | 重排模型列表：`{"models":[...]}` |
-| `POST` | `/api/chain/models` | 添加模型：`{"code":"..."}` |
+| `POST` | `/api/chain/models` | 添加模型：`{"code":"dashscope/qwen3.8-27b"}`，必须带提供商标识 |
 | `DELETE` | `/api/chain/models/:code` | 从列表移出模型 |
 | `POST` | `/api/chain/models/remove` | 批量移出：`{"models":["a","b"]}`，返回 `removed` 与实际条数；一次落盘 |
 | `POST` | `/api/models/:code/revive` | 重置模型状态为待检测 |
 | `POST` | `/api/models/:code/apis` | 设置 API 能力：`{"apis":["chat","responses"]}` |
-| `POST` | `/api/models/:code/provider` | 指定模型提供商：`{"provider":"openai"}`，`null` 表示回落到默认 |
 | `POST` | `/api/catalog/refresh` | 拉取模型目录；不传参数刷新全部提供商，`{"provider":"openai"}` 只刷一个 |
 | `POST` | `/api/test` | 真实测试请求：`{"prompt":"..."}`，走 `auto` |
 
@@ -399,9 +399,9 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 - 状态与事件是单机文件，不适用于多实例共享。
 - 看板保存会把 `config.json` 重写为规范化严格 JSON，手写的注释与字段顺序会丢失；想保留注释就只改文件、不开看板保存。
 - 列表里没有的模型原样透传，不参与故障转移；`auto` 只会在列表内切换。
-- 改名或移出模型不会同步客户端里的 `model` 值，请自行更新调用方配置；模型 code 由提供商决定，不建议在配置里改名。
-- 提供商 `id` 是模型的引用键，已在用的 id 保存后不可修改；非要改名时请同时更新 `modelProviders`，否则配置校验会报"指向不存在的提供商"。
-- 同名模型出现在多个提供商时，模型目录只保留第一条记录；`/v1/models` 的 `provider` 反映的是 `modelProviders` 的最终归属。
+- 模型 code 由「提供商 + 上游模型名」组成（`提供商/模型名`）；改名或移出模型不会同步客户端里的 `model` 值，请自行更新调用方配置。
+- 提供商 `id` 是模型 code 的前缀，已在用的 id 保存后不可修改；非要改名时请同时改掉所有引用它的模型 code，否则这些模型会因为前缀失效而只能透传。
+- 同名模型出现在多个提供商时，目录里会保留多条记录（各自带 `provider`），按 `提供商/模型名` 分别管理用量、价格和健康状态。
 
 ## 开发
 

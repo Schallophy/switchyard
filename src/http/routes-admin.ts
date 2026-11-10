@@ -148,24 +148,14 @@ export function registerAdminRoutes(router: Router, runtime: Runtime): void {
     ctx.send(200, { ok: true, code, apis: runtime.apisFor(code) });
   });
 
-  router.add("POST", "/api/models/:code/provider", async (ctx) => {
-    const code = (ctx.params.code ?? "").trim();
-    if (!code) throw new HttpError(400, "缺少模型 code");
-    const body = asObject(ctx);
-    const value = body.provider;
-    if (value !== null && typeof value !== "string") throw new HttpError(400, "provider 必须是提供商 id 或 null");
-    const effective = await guarded(ctx, () => runtime.updateModelProvider(code, value === null ? null : value));
-    if (effective === null) return;
-    ctx.send(200, { ok: true, code, provider: effective });
-  });
-
   router.add("POST", "/api/chain/order", async (ctx) => {
     const body = asObject(ctx);
     const list = Array.isArray(body.models) ? body.models : [];
     const models = unique(list.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()));
     if (models.length === 0) throw new HttpError(400, "models 必须是非空数组");
-    await runtime.updateChainModels(models);
-    ctx.send(200, { ok: true, chain: { active: runtime.activeModel(), models } });
+    const done = await guarded(ctx, () => runtime.updateChainModels(models));
+    if (done === null) return;
+    ctx.send(200, { ok: true, chain: { active: runtime.activeModel(), models: runtime.chainCodes() } });
   });
 
   router.add("POST", "/api/chain/models", async (ctx) => {
@@ -174,8 +164,9 @@ export function registerAdminRoutes(router: Router, runtime: Runtime): void {
     if (!code) throw new HttpError(400, "code 不能为空");
     const models = runtime.chainCodes();
     if (!models.includes(code)) models.push(code);
-    await runtime.updateChainModels(models);
-    ctx.send(200, { ok: true, chain: { active: runtime.activeModel(), models } });
+    const done = await guarded(ctx, () => runtime.updateChainModels(models));
+    if (done === null) return;
+    ctx.send(200, { ok: true, chain: { active: runtime.activeModel(), models: runtime.chainCodes() } });
   });
 
   router.add("POST", "/api/chain/models/remove", async (ctx) => {
@@ -235,16 +226,17 @@ export function registerAdminRoutes(router: Router, runtime: Runtime): void {
 function buildOverview(runtime: Runtime): Record<string, unknown> {
   const tracked = new Set(runtime.chainCodes());
   const catalog = runtime.store.catalog.models.map((entry) => {
-    const record = runtime.store.get(entry.id);
+    const record = runtime.store.get(entry.code);
     return {
-      id: entry.id,
+      code: entry.code,
+      upstream: entry.upstream,
       family: entry.family,
-      tracked: tracked.has(entry.id),
+      tracked: tracked.has(entry.code),
       health: record?.health ?? null,
       lastStatusCode: record?.lastStatusCode ?? null,
       lastErrorCode: record?.lastErrorCode ?? null,
-      apis: runtime.apisFor(entry.id),
-      provider: entry.provider ?? runtime.providerIdFor(entry.id),
+      apis: runtime.apisFor(entry.code),
+      provider: entry.provider || runtime.providerIdFor(entry.code),
     };
   });
 
@@ -271,7 +263,6 @@ function buildOverview(runtime: Runtime): Record<string, unknown> {
       injectStreamUsage: provider.injectStreamUsage,
     })),
     defaultProvider: runtime.config.defaultProvider,
-    modelProviders: runtime.config.modelProviders,
     pricing: {
       currency: runtime.config.pricing.currency,
       unit: runtime.config.pricing.unit,

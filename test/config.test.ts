@@ -12,19 +12,19 @@ test("the shipped defaults validate cleanly", () => {
 
 test("active defaults to the first model", () => {
   const config = defaultConfig();
-  config.chain.models = ["a", "b"];
+  config.chain.models = ["dashscope/a", "dashscope/b"];
   const result = normalizeConfig(config);
   assert.equal(result.ok, true);
-  assert.equal(result.config.chain.active, "a");
+  assert.equal(result.config.chain.active, "dashscope/a");
 });
 
 test("an active model outside the list falls back to the first model", () => {
   const config = defaultConfig();
-  config.chain.models = ["a", "b"];
-  config.chain.active = "c";
+  config.chain.models = ["dashscope/a", "dashscope/b"];
+  config.chain.active = "dashscope/c";
   const result = normalizeConfig(config);
   assert.equal(result.ok, true);
-  assert.equal(result.config.chain.active, "a");
+  assert.equal(result.config.chain.active, "dashscope/a");
   assert.ok(result.warnings.some((warning) => warning.includes("当前模型")));
 });
 
@@ -48,23 +48,23 @@ test("the model list may start empty and gets a warning", () => {
 
 test("duplicate models inside the list are deduplicated", () => {
   const config = defaultConfig();
-  config.chain.models = ["a", "a", "b"];
+  config.chain.models = ["dashscope/a", "dashscope/a", "dashscope/b"];
   const result = normalizeConfig(config);
-  assert.deepEqual(result.config.chain.models, ["a", "b"]);
-  assert.equal(result.config.chain.active, "a");
+  assert.deepEqual(result.config.chain.models, ["dashscope/a", "dashscope/b"]);
+  assert.equal(result.config.chain.active, "dashscope/a");
 });
 
 test("a legacy chains[] config migrates to a single model list", () => {
   const raw = JSON.parse(JSON.stringify(defaultConfig())) as Record<string, any>;
   delete raw.chain;
   raw.chains = [
-    { name: "text", purpose: "tools", models: ["a"], context: { window: 64_000, onOverflow: "passthrough" } },
-    { name: "main", purpose: "default", models: ["b", "c"], context: { window: 128_000, onOverflow: "reject" } },
+    { name: "text", purpose: "tools", models: ["dashscope/a"], context: { window: 64_000, onOverflow: "passthrough" } },
+    { name: "main", purpose: "default", models: ["dashscope/b", "dashscope/c"], context: { window: 128_000, onOverflow: "reject" } },
   ];
   const result = normalizeConfig(raw);
   assert.equal(result.ok, true);
-  assert.deepEqual(result.config.chain.models, ["b", "c"]);
-  assert.equal(result.config.chain.active, "b");
+  assert.deepEqual(result.config.chain.models, ["dashscope/b", "dashscope/c"]);
+  assert.equal(result.config.chain.active, "dashscope/b");
   assert.deepEqual(result.config.chain.context, { window: 128_000, onOverflow: "reject" });
   assert.ok(result.warnings.some((warning) => warning.includes("合并")));
 });
@@ -124,32 +124,32 @@ test("env-provided api key names survive normalization", () => {
 
 test("chain models default to chat capability when modelApis is absent", () => {
   const raw = JSON.parse(JSON.stringify(defaultConfig())) as Record<string, any>;
-  raw.chain.models = ["qwen3.8-flash", "kimi-k3"];
+  raw.chain.models = ["dashscope/qwen3.8-flash", "dashscope/kimi-k3"];
   delete raw.modelApis;
   const result = normalizeConfig(raw);
   assert.equal(result.ok, true);
-  assert.deepEqual(result.config.modelApis["qwen3.8-flash"], ["chat"]);
-  assert.deepEqual(result.config.modelApis["kimi-k3"], ["chat"]);
+  assert.deepEqual(result.config.modelApis["dashscope/qwen3.8-flash"], ["chat"]);
+  assert.deepEqual(result.config.modelApis["dashscope/kimi-k3"], ["chat"]);
 });
 
 test("modelApis entries are deduplicated and ordered canonically", () => {
   const raw = JSON.parse(JSON.stringify(defaultConfig())) as Record<string, any>;
-  raw.modelApis["kimi-k3.1-pro"] = ["responses", "chat", "responses"];
+  raw.modelApis["dashscope/kimi-k3.1-pro"] = ["responses", "chat", "responses"];
   const result = normalizeConfig(raw);
   assert.equal(result.ok, true);
-  assert.deepEqual(result.config.modelApis["kimi-k3.1-pro"], ["chat", "responses"]);
+  assert.deepEqual(result.config.modelApis["dashscope/kimi-k3.1-pro"], ["chat", "responses"]);
 });
 
 test("unknown or empty modelApis entries are rejected", () => {
   const raw = JSON.parse(JSON.stringify(defaultConfig())) as Record<string, any>;
-  raw.chain.models = ["kimi-k3.1-pro", "qwen3.8-27b"];
-  raw.modelApis["kimi-k3.1-pro"] = ["telepathy"];
-  raw.modelApis["qwen3.8-27b"] = [];
+  raw.chain.models = ["dashscope/kimi-k3.1-pro", "dashscope/qwen3.8-27b"];
+  raw.modelApis["dashscope/kimi-k3.1-pro"] = ["telepathy"];
+  raw.modelApis["dashscope/qwen3.8-27b"] = [];
   const result = normalizeConfig(raw);
   assert.equal(result.ok, false);
   assert.ok(result.errors.some((error) => error.includes("telepathy")));
   assert.ok(result.errors.some((error) => error.includes("qwen3.8-27b")));
-  assert.deepEqual(result.config.modelApis["qwen3.8-27b"], ["chat"]);
+  assert.deepEqual(result.config.modelApis["dashscope/qwen3.8-27b"], ["chat"]);
 });
 
 test("ui / server / log blocks fall back to safe defaults", () => {
@@ -235,12 +235,16 @@ test("an unknown defaultProvider falls back to the first one", () => {
   assert.ok(result.warnings.some((warning) => warning.includes("defaultProvider")));
 });
 
-test("modelProviders must point at a known provider", () => {
+test("legacy modelProviders binds bare model codes to providers", () => {
   const raw = JSON.parse(JSON.stringify(defaultConfig())) as Record<string, any>;
+  raw.chain = { active: "qwen3.8-27b", models: ["qwen3.8-27b"] };
   raw.modelProviders = { "qwen3.8-27b": "dashscope" };
-  const ok = normalizeConfig(raw);
-  assert.equal(ok.ok, true);
-  assert.equal(ok.config.modelProviders["qwen3.8-27b"], "dashscope");
+  const result = normalizeConfig(raw);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.config.chain.models, ["dashscope/qwen3.8-27b"]);
+  assert.equal(result.config.chain.active, "dashscope/qwen3.8-27b");
+  assert.ok(!("modelProviders" in result.config));
+  assert.ok(result.warnings.some((warning) => warning.includes("modelProviders")));
 
   raw.modelProviders = { "qwen3.8-27b": "nowhere" };
   const bad = normalizeConfig(raw);
@@ -248,14 +252,35 @@ test("modelProviders must point at a known provider", () => {
   assert.ok(bad.errors.some((error) => error.includes("不存在的提供商")));
 });
 
-test("the intermediate modelUpstreams key is migrated to modelProviders", () => {
+test("the intermediate modelUpstreams key is migrated into model codes", () => {
   const raw = JSON.parse(JSON.stringify(defaultConfig())) as Record<string, any>;
-  delete raw.modelProviders;
+  raw.chain = { active: "qwen3.8-27b", models: ["qwen3.8-27b"] };
   raw.modelUpstreams = { "qwen3.8-27b": "dashscope" };
   const result = normalizeConfig(raw);
   assert.equal(result.ok, true);
   assert.ok(result.warnings.some((warning) => warning.includes("modelUpstreams")));
-  assert.equal(result.config.modelProviders["qwen3.8-27b"], "dashscope");
+  assert.deepEqual(result.config.chain.models, ["dashscope/qwen3.8-27b"]);
+});
+
+test("the same upstream model on two providers stays two models", () => {
+  const raw = JSON.parse(JSON.stringify(defaultConfig())) as Record<string, any>;
+  raw.providers.push({ id: "alpha", baseUrl: "https://alpha.example/v1" });
+  raw.chain.models = ["dashscope/qwen3.8-max", "alpha/qwen3.8-max"];
+  const result = normalizeConfig(raw);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.config.chain.models, ["dashscope/qwen3.8-max", "alpha/qwen3.8-max"]);
+  assert.deepEqual(Object.keys(result.config.modelApis).sort(), ["alpha/qwen3.8-max", "dashscope/qwen3.8-max"]);
+
+  raw.pricing = {
+    models: {
+      "dashscope/qwen3.8-max": { tiers: [{ from: "00:00", to: "00:00", input: 1, cachedInput: 0.1, output: 4 }] },
+      "alpha/qwen3.8-max": { tiers: [{ from: "00:00", to: "00:00", input: 2, cachedInput: 0.2, output: 8 }] },
+    },
+  };
+  const priced = normalizeConfig(raw);
+  assert.equal(priced.ok, true);
+  assert.equal(priced.config.pricing.models["dashscope/qwen3.8-max"]?.tiers[0]?.input, 1);
+  assert.equal(priced.config.pricing.models["alpha/qwen3.8-max"]?.tiers[0]?.input, 2);
 });
 
 test("the intermediate upstreams array is migrated to providers", () => {
@@ -286,7 +311,7 @@ test("pricing tiers normalize and keep order", () => {
     currency: "CNY",
     unit: 1_000_000,
     models: {
-      model: {
+      "dashscope/model": {
         tiers: [
           { from: "22:00", to: "08:00", input: 1, cachedInput: 0.1, output: 4 },
           { from: "08:00", to: "22:00", input: 2, cachedInput: 0.2, output: 8 },
@@ -298,7 +323,7 @@ test("pricing tiers normalize and keep order", () => {
   assert.equal(result.ok, true);
   assert.equal(result.config.pricing.currency, "CNY");
   assert.deepEqual(
-    result.config.pricing.models.model?.tiers.map((tier) => tier.input),
+    result.config.pricing.models["dashscope/model"]?.tiers.map((tier) => tier.input),
     [1, 2],
   );
 });
@@ -307,7 +332,7 @@ test("pricing rejects cache prices above the input price", () => {
   const raw = JSON.parse(JSON.stringify(defaultConfig())) as Record<string, any>;
   raw.pricing = {
     models: {
-      model: { tiers: [{ from: "00:00", to: "00:00", input: 1, cachedInput: 2, output: 4 }] },
+      "dashscope/model": { tiers: [{ from: "00:00", to: "00:00", input: 1, cachedInput: 2, output: 4 }] },
     },
   };
   const result = normalizeConfig(raw);
@@ -319,7 +344,7 @@ test("pricing requires the tiers to cover a full day", () => {
   const raw = JSON.parse(JSON.stringify(defaultConfig())) as Record<string, any>;
   raw.pricing = {
     models: {
-      model: { tiers: [{ from: "08:00", to: "22:00", input: 2, cachedInput: 0.2, output: 8 }] },
+      "dashscope/model": { tiers: [{ from: "08:00", to: "22:00", input: 2, cachedInput: 0.2, output: 8 }] },
     },
   };
   const result = normalizeConfig(raw);
@@ -331,7 +356,7 @@ test("pricing rejects malformed clock values", () => {
   const raw = JSON.parse(JSON.stringify(defaultConfig())) as Record<string, any>;
   raw.pricing = {
     models: {
-      model: { tiers: [{ from: "25:00", to: "08:00", input: 1, cachedInput: 0.1, output: 4 }] },
+      "dashscope/model": { tiers: [{ from: "25:00", to: "08:00", input: 1, cachedInput: 0.1, output: 4 }] },
     },
   };
   const result = normalizeConfig(raw);

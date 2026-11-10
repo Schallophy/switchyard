@@ -178,7 +178,7 @@ function outputMainHtml(data) {
       ${countdownHtml(status)}
       ${
         current
-          ? `<span class="dot-sep" aria-hidden="true">·</span><span>${esc(providerLabel(current.code, data))}</span>`
+          ? `<span class="dot-sep" aria-hidden="true">·</span><span>${esc(providerLabel(current, data))}</span>`
           : ""
       }
     </div>
@@ -263,14 +263,20 @@ function rowHtml(model, index, data) {
 function metaLine(model, data) {
   return [
     model.family || "Other",
-    providerLabel(model.code, data),
+    providerLabel(model, data),
     `${fmtInt(model.requests)} 次请求`,
     `${fmtTokens(tokensOf(model))} tokens`,
   ].join(" · ");
 }
 
-function providerLabel(code, data) {
-  const id = data.modelProviders?.[code] || data.defaultProvider;
+/** 模型 code 形如 `提供商/模型名`；取最长的提供商 id 前缀。 */
+function providerIdFromCode(code, data) {
+  const providers = [...(data.providers || [])].sort((a, b) => b.id.length - a.id.length);
+  return providers.find((provider) => code?.startsWith(`${provider.id}/`))?.id || "";
+}
+
+function providerLabel(model, data) {
+  const id = model?.provider || providerIdFromCode(model?.code, data) || data.defaultProvider;
   const provider = (data.providers || []).find((item) => item.id === id);
   return provider ? provider.label || provider.id : id || "默认提供商";
 }
@@ -598,7 +604,6 @@ function openRowMenu(anchor, code, ctx) {
       action: () => revive(code, ctx),
     },
     { label: "编辑 API 能力", action: () => openApis(code, ctx) },
-    { label: "指定提供商", action: () => openProvider(code, ctx) },
     { separator: true },
     { label: "移出列表", danger: true, action: () => removeOne(code, ctx) },
   ]);
@@ -793,7 +798,8 @@ function openDetail(code, ctx) {
       )}`,
     ],
     ["厂商", esc(model.family || "—")],
-    ["提供商", esc(providerLabel(code, data))],
+    ["提供商", esc(providerLabel(model, data))],
+    ["上游模型", `<span class="mono">${esc(model.upstream || "—")}</span>`],
     [
       "API 能力",
       (model.apis || []).map((item) => API_LABELS[item] || item).join(" / ") || "—",
@@ -902,59 +908,6 @@ function openApis(code, ctx) {
   });
 }
 
-function openProvider(code, ctx) {
-  const data = store.data;
-  const model = data?.chain.models.find((item) => item.code === code);
-  if (!model) return;
-
-  const providers = data.providers || [];
-  const assigned = data.modelProviders?.[code] || "";
-  const defaultProvider = providers.find((item) => item.id === data.defaultProvider);
-
-  const options = [
-    `<option value="">跟随默认（${esc(defaultProvider?.label || data.defaultProvider || "未设置")}）</option>`,
-    ...providers.map(
-      (provider) =>
-        `<option value="${esc(provider.id)}" ${provider.id === assigned ? "selected" : ""}>${esc(
-          provider.label || provider.id,
-        )}（${esc(provider.id)}）</option>`,
-    ),
-  ].join("");
-
-  openDialog({
-    title: `指定提供商 · ${code}`,
-    body: `
-      <label class="field">
-        <span class="field-label">提供商</span>
-        <select class="select" id="provider-select">${options}</select>
-        <span class="field-hint">未单独指定的模型走默认提供商。此设置只影响这个模型。</span>
-      </label>
-      <p class="field-hint" id="provider-error" style="color:var(--stop);margin-top:8px"></p>
-    `,
-    footer: `
-      <button class="btn" type="button" data-act="cancel">取消</button>
-      <button class="btn primary" type="button" data-act="save">保存</button>
-    `,
-    onMount(node) {
-      const select = node.querySelector("#provider-select");
-      const error = node.querySelector("#provider-error");
-      node.querySelector('[data-act="cancel"]').addEventListener("click", () => node.close());
-      node.querySelector('[data-act="save"]').addEventListener("click", async () => {
-        try {
-          await api.post(`/api/models/${encodeURIComponent(code)}/provider`, {
-            provider: select.value || null,
-          });
-          toast(`${code} 的提供商已更新`, "ok");
-          node.close();
-          await ctx.refresh();
-        } catch (failure) {
-          error.textContent = failure.message;
-        }
-      });
-    },
-  });
-}
-
 /* ---------- add model sheet ---------- */
 
 function openAddSheet(ctx) {
@@ -976,10 +929,11 @@ function openAddSheet(ctx) {
       <div class="manual-add">
         <label class="field-label" for="manual-code">手动添加</label>
         <div class="row-inline">
+          <select class="select" id="manual-provider">${providerOptions()}</select>
           <input class="input mono" id="manual-code" placeholder="例如 qwen3.8-max-0902" autocomplete="off">
           <button class="btn" type="button" data-act="manual-add">加入</button>
         </div>
-        <p class="field-hint">目录里没有的模型也可以直接填 code。</p>
+        <p class="field-hint">模型绑定到所选提供商；同一模型名挂在两个提供商下算两个模型。</p>
       </div>
     `,
     footer: `<div class="sheet-foot" id="add-foot">${addFootHtml()}</div>`,
@@ -999,11 +953,23 @@ function filteredCatalog() {
     if (local.add.filter === "untracked" && entry.tracked) return false;
     if (local.add.filter === "alive" && entry.health !== "alive") return false;
     if (query) {
-      const haystack = `${entry.id} ${entry.family || ""} ${entry.provider || ""}`.toLowerCase();
+      const haystack = `${entry.code} ${entry.upstream || ""} ${entry.family || ""} ${entry.provider || ""}`.toLowerCase();
       if (!haystack.includes(query)) return false;
     }
     return true;
   });
+}
+
+function providerOptions() {
+  const data = store.data;
+  return (data?.providers || [])
+    .map(
+      (provider) =>
+        `<option value="${esc(provider.id)}" ${provider.id === data.defaultProvider ? "selected" : ""}>${esc(
+          provider.label || provider.id,
+        )}</option>`,
+    )
+    .join("");
 }
 
 function catalogInner() {
@@ -1022,7 +988,7 @@ function catalogInner() {
 
 function entryRow(entry) {
   const tracked = Boolean(entry.tracked);
-  const checked = local.add.selected.has(entry.id);
+  const checked = local.add.selected.has(entry.code);
 
   const state =
     entry.health === "alive"
@@ -1033,12 +999,14 @@ function entryRow(entry) {
           ? ["stop", "无效"]
           : ["idle", "未检测"];
 
+  const provider = providerLabel(entry, store.data);
+
   return `
     <label class="catalog-row${tracked ? " is-tracked" : ""}">
-      <input type="checkbox" value="${esc(entry.id)}" ${checked ? "checked" : ""} ${tracked ? "disabled" : ""}>
+      <input type="checkbox" value="${esc(entry.code)}" ${checked ? "checked" : ""} ${tracked ? "disabled" : ""}>
       <span class="catalog-main">
-        <span class="catalog-code">${esc(entry.id)}</span>
-        <span class="catalog-meta">${esc(entry.family || "Other")} · ${esc(entry.provider || "默认")}</span>
+        <span class="catalog-code">${esc(entry.upstream || entry.code)}</span>
+        <span class="catalog-meta">${esc(provider)} · ${esc(entry.family || "Other")}</span>
       </span>
       <span class="catalog-state status-text" data-tone="${state[0]}">${tracked ? "已在列表" : state[1]}</span>
     </label>
@@ -1060,6 +1028,7 @@ function bindAdd(node, ctx) {
   const wrap = node.querySelector("#catalog-wrap");
   const foot = node.querySelector("#add-foot");
   const manual = node.querySelector("#manual-code");
+  const manualProvider = node.querySelector("#manual-provider");
 
   const rerenderList = () => {
     wrap.innerHTML = catalogInner();
@@ -1092,11 +1061,13 @@ function bindAdd(node, ctx) {
   });
 
   const addManual = async () => {
-    const code = manual.value.trim();
-    if (!code) {
-      toast("请输入模型 code", "warn");
+    const upstream = manual.value.trim();
+    if (!upstream) {
+      toast("请输入模型名", "warn");
       return;
     }
+    const provider = manualProvider?.value || "";
+    const code = provider && !upstream.startsWith(`${provider}/`) ? `${provider}/${upstream}` : upstream;
     try {
       await api.post("/api/chain/models", { code });
       toast(`已把 ${code} 加入模型列表`, "ok");

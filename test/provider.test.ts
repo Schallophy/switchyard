@@ -26,7 +26,6 @@ function twoProviderConfig(): GatewayConfig {
     },
   ];
   config.defaultProvider = "beta";
-  config.modelProviders = { "alpha-model": "alpha" };
   delete process.env.SWITCHYARD_TEST_ALPHA_KEY;
   delete process.env.SWITCHYARD_TEST_BETA_KEY;
   return config;

@@ -6,10 +6,13 @@ import type { ModelRecord, Usage } from "../types.ts";
 import { familyOf } from "../util/model.ts";
 
 export interface CatalogEntry {
-  id: string;
+  /** `提供商/模型名`，与 chain.models 使用同一套标识。 */
+  code: string;
+  /** 上游模型名（不含提供商标识）。 */
+  upstream: string;
   family: string;
-  /** 该模型来自哪个提供商（多提供商时用于区分同名模型）。 */
-  provider?: string;
+  /** 该模型来自哪个提供商；同名模型在不同提供商下是两条记录。 */
+  provider: string;
 }
 
 export interface ApiStat {
@@ -390,6 +393,61 @@ export class StateStore {
     this.saveSoon();
   }
 
+  /**
+   * 旧版本按裸模型名记账；现在模型 code 带提供商前缀。把旧记录并到新 code 上，
+   * 保留健康状态、用量与校准样本，避免升级后历史凭空消失。
+   */
+  migrateModelCodes(resolve: (code: string) => string | null): void {
+    let changed = false;
+    for (const [code, record] of Object.entries(this.#data.models)) {
+      const target = resolve(code);
+      if (!target || target === code) continue;
+      const existing = this.#data.models[target];
+      if (!existing) {
+        this.#data.models[target] = { ...record, code: target };
+      } else {
+        const keep = newest(existing.checkedAt, record.checkedAt) === record.checkedAt ? record : existing;
+        this.#data.models[target] = {
+          ...existing,
+          health: keep.health,
+          reason: keep.reason,
+          lastErrorCode: keep.lastErrorCode,
+          lastStatusCode: keep.lastStatusCode,
+          lastErrorMessage: keep.lastErrorMessage,
+          checkedAt: keep.checkedAt,
+          throttledUntil: keep.throttledUntil,
+          lastUsedAt: newest(existing.lastUsedAt, record.lastUsedAt) === record.lastUsedAt ? record.lastUsedAt : existing.lastUsedAt,
+          requests: existing.requests + record.requests,
+          failures: existing.failures + record.failures,
+          promptTokens: existing.promptTokens + record.promptTokens,
+          cachedPromptTokens: existing.cachedPromptTokens + record.cachedPromptTokens,
+          cacheTrackedPromptTokens: existing.cacheTrackedPromptTokens + record.cacheTrackedPromptTokens,
+          completionTokens: existing.completionTokens + record.completionTokens,
+          cost: existing.cost + record.cost,
+        };
+      }
+      delete this.#data.models[code];
+      changed = true;
+    }
+
+    for (const [code, record] of Object.entries(this.#data.calibration)) {
+      const target = resolve(code);
+      if (!target || target === code) continue;
+      if (!this.#data.calibration[target]) this.#data.calibration[target] = record;
+      delete this.#data.calibration[code];
+      changed = true;
+    }
+
+    for (const stat of Object.values(this.#data.stats.apis)) {
+      if (stat.lastModel) stat.lastModel = resolve(stat.lastModel) ?? stat.lastModel;
+    }
+    for (const caller of Object.values(this.#data.callers)) {
+      if (caller.lastModel) caller.lastModel = resolve(caller.lastModel) ?? caller.lastModel;
+    }
+
+    if (changed) this.saveSoon();
+  }
+
   bumpRequests(api: ApiKind = "chat"): void {
     const now = new Date().toISOString();
     this.#data.stats.requests += 1;
@@ -458,17 +516,20 @@ export class StateStore {
     this.saveSoon();
   }
 
-  setCatalog(entries: Array<{ id: string; provider?: string }>): void {
-    const byId = new Map<string, string | undefined>();
+  setCatalog(entries: Array<{ id: string; provider: string }>): void {
+    const byCode = new Map<string, CatalogEntry>();
     for (const entry of entries) {
-      const id = entry.id.trim();
-      if (!id || byId.has(id)) continue;
-      byId.set(id, entry.provider);
+      const upstream = entry.id.trim();
+      const provider = entry.provider.trim();
+      if (!upstream || !provider) continue;
+      const code = `${provider}/${upstream}`;
+      if (byCode.has(code)) continue;
+      byCode.set(code, { code, upstream, family: familyOf(upstream), provider });
     }
-    const models: CatalogEntry[] = [...byId.entries()]
-      .map(([id, provider]) => (provider ? { id, family: familyOf(id), provider } : { id, family: familyOf(id) }))
-      .sort((a, b) => a.family.localeCompare(b.family) || a.id.localeCompare(b.id));
-    this.#data.catalog = { fetchedAt: new Date().toISOString(), models };
+    this.#data.catalog = {
+      fetchedAt: new Date().toISOString(),
+      models: [...byCode.values()].sort((a, b) => a.family.localeCompare(b.family) || a.code.localeCompare(b.code)),
+    };
     this.saveSoon();
   }
 
@@ -571,18 +632,30 @@ function hydrate(source: Record<string, unknown>): PersistedState {
   if (catalog && typeof catalog === "object" && !Array.isArray(catalog)) {
     const record = catalog as Record<string, unknown>;
     const list = Array.isArray(record.models) ? record.models : [];
+    const seen = new Set<string>();
+    const models: CatalogEntry[] = [];
+    for (const item of list) {
+      if (!item || typeof item !== "object") continue;
+      const raw = item as Record<string, unknown>;
+      // 旧版本把上游模型名存在 id 里，提供商标识单独放 provider
+      const upstreamRaw = typeof raw.upstream === "string" ? raw.upstream : typeof raw.id === "string" ? raw.id : "";
+      const providerRaw = typeof raw.provider === "string" ? raw.provider : "";
+      const upstream = upstreamRaw.trim();
+      if (!upstream) continue;
+      const provider = providerRaw.trim();
+      const code = typeof raw.code === "string" && raw.code.trim() ? raw.code.trim() : provider ? `${provider}/${upstream}` : upstream;
+      if (seen.has(code)) continue;
+      seen.add(code);
+      models.push({
+        code,
+        upstream,
+        family: typeof raw.family === "string" ? raw.family : familyOf(upstream),
+        provider,
+      });
+    }
     base.catalog = {
       fetchedAt: typeof record.fetchedAt === "string" ? record.fetchedAt : null,
-      models: list
-        .filter((item): item is CatalogEntry => Boolean(item) && typeof item === "object" && typeof (item as CatalogEntry).id === "string")
-        .map((item) => {
-          // 旧版本把来源记在 upstream 字段里，读的时候兼容一下
-          const legacy = (item as unknown as Record<string, unknown>).upstream;
-          const provider = typeof item.provider === "string" ? item.provider : typeof legacy === "string" ? legacy : undefined;
-          const entry: CatalogEntry = { id: item.id, family: typeof item.family === "string" ? item.family : familyOf(item.id) };
-          if (provider) entry.provider = provider;
-          return entry;
-        }),
+      models,
     };
   }
 
@@ -591,6 +664,13 @@ function hydrate(source: Record<string, unknown>): PersistedState {
 
 function numberOr(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+/** 两个 ISO 时间取较新的一个；任一为空时返回另一个。 */
+function newest(left: string | null, right: string | null): string | null {
+  if (!left) return right;
+  if (!right) return left;
+  return Date.parse(left) >= Date.parse(right) ? left : right;
 }
 
 function isApiKindValue(value: unknown): value is ApiKind {

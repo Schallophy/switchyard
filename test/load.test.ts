@@ -58,8 +58,8 @@ test("saved config is strict json and round-trips", async () => {
   const dir = await mkdtemp(join(tmpdir(), "switchyard-config-"));
   const file = join(dir, "config.json");
   const config = defaultConfig();
-  config.chain.active = "b";
-  config.chain.models = ["a", "b"];
+  config.chain.active = "dashscope/b";
+  config.chain.models = ["dashscope/a", "dashscope/b"];
   config.chain.context = { window: 64_000, onOverflow: "passthrough" };
   config.server.maxBodyBytes = 1_048_576;
   config.log.level = "debug";
@@ -68,8 +68,8 @@ test("saved config is strict json and round-trips", async () => {
   const text = await readFile(file, "utf8");
   assert.doesNotThrow(() => JSON.parse(text));
   const loaded = await loadConfig(file);
-  assert.equal(loaded.config.chain.active, "b");
-  assert.deepEqual(loaded.config.chain.models, ["a", "b"]);
+  assert.equal(loaded.config.chain.active, "dashscope/b");
+  assert.deepEqual(loaded.config.chain.models, ["dashscope/a", "dashscope/b"]);
   assert.deepEqual(loaded.config.chain.context, { window: 64_000, onOverflow: "passthrough" });
   assert.equal(loaded.config.server.maxBodyBytes, 1_048_576);
   assert.equal(loaded.config.log.level, "debug");
@@ -102,25 +102,25 @@ type SavedChain = { chain: { active: string; models: string[]; context: { window
 
 test("updating the model list dedupes and keeps active valid", async () => {
   const { runtime, dir } = await makeRuntime();
-  await runtime.updateChainModels(["a", "b", "a"]);
+  await runtime.updateChainModels(["dashscope/a", "dashscope/b", "dashscope/a"]);
 
-  assert.deepEqual(runtime.chainCodes(), ["a", "b"]);
-  assert.equal(runtime.activeModel(), "a");
+  assert.deepEqual(runtime.chainCodes(), ["dashscope/a", "dashscope/b"]);
+  assert.equal(runtime.activeModel(), "dashscope/a");
 
   const saved = JSON.parse(await readFile(join(dir, "config.json"), "utf8")) as SavedChain;
-  assert.deepEqual(saved.chain.models, ["a", "b"]);
-  assert.equal(saved.chain.active, "a");
+  assert.deepEqual(saved.chain.models, ["dashscope/a", "dashscope/b"]);
+  assert.equal(saved.chain.active, "dashscope/a");
   await runtime.shutdown();
 });
 
 test("setting the active model persists and rejects unknown models", async () => {
   const { runtime, dir } = await makeRuntime();
-  await runtime.updateChainModels(["a", "b"]);
-  await runtime.setActiveModel("b");
+  await runtime.updateChainModels(["dashscope/a", "dashscope/b"]);
+  await runtime.setActiveModel("dashscope/b");
 
-  assert.equal(runtime.activeModel(), "b");
+  assert.equal(runtime.activeModel(), "dashscope/b");
   const saved = JSON.parse(await readFile(join(dir, "config.json"), "utf8")) as SavedChain;
-  assert.equal(saved.chain.active, "b");
+  assert.equal(saved.chain.active, "dashscope/b");
 
   await assert.rejects(() => runtime.setActiveModel("nope"), /不在列表/);
   await runtime.shutdown();
@@ -128,27 +128,27 @@ test("setting the active model persists and rejects unknown models", async () =>
 
 test("removing the active model falls back to the first model", async () => {
   const { runtime } = await makeRuntime();
-  await runtime.updateChainModels(["a", "b", "c"]);
-  await runtime.setActiveModel("c");
-  await runtime.updateChainModels(["a", "b"]);
+  await runtime.updateChainModels(["dashscope/a", "dashscope/b", "dashscope/c"]);
+  await runtime.setActiveModel("dashscope/c");
+  await runtime.updateChainModels(["dashscope/a", "dashscope/b"]);
 
-  assert.equal(runtime.activeModel(), "a");
+  assert.equal(runtime.activeModel(), "dashscope/a");
   await runtime.shutdown();
 });
 
 test("the effective model skips dead entries after the active one", async () => {
   const { runtime } = await makeRuntime();
-  await runtime.updateChainModels(["a", "b", "c"]);
-  await runtime.setActiveModel("b");
-  assert.equal(runtime.effectiveModel(), "b");
+  await runtime.updateChainModels(["dashscope/a", "dashscope/b", "dashscope/c"]);
+  await runtime.setActiveModel("dashscope/b");
+  assert.equal(runtime.effectiveModel(), "dashscope/b");
 
-  runtime.store.setHealth("b", "dead", { reason: "额度已耗尽" });
-  assert.equal(runtime.effectiveModel(), "c");
+  runtime.store.setHealth("dashscope/b", "dead", { reason: "额度已耗尽" });
+  assert.equal(runtime.effectiveModel(), "dashscope/c");
 
-  runtime.store.setHealth("c", "invalid", { reason: "模型不存在" });
-  assert.equal(runtime.effectiveModel(), "a");
+  runtime.store.setHealth("dashscope/c", "invalid", { reason: "模型不存在" });
+  assert.equal(runtime.effectiveModel(), "dashscope/a");
 
-  runtime.store.setHealth("a", "dead", { reason: "额度已耗尽" });
+  runtime.store.setHealth("dashscope/a", "dead", { reason: "额度已耗尽" });
   assert.equal(runtime.effectiveModel(), null);
 
   await runtime.shutdown();
@@ -156,14 +156,14 @@ test("the effective model skips dead entries after the active one", async () => 
 
 test("a retried dead model that fails again goes back to waiting", async () => {
   const { runtime } = await makeRuntime();
-  await runtime.updateChainModels(["a", "b"]);
-  runtime.store.setHealth("a", "dead", {
+  await runtime.updateChainModels(["dashscope/a", "dashscope/b"]);
+  runtime.store.setHealth("dashscope/a", "dead", {
     reason: "额度已耗尽",
     checkedAt: new Date(Date.now() - 48 * 3_600_000).toISOString(),
   });
-  assert.equal(runtime.effectiveModel(), "a", "过期失效模型会先被尝试");
+  assert.equal(runtime.effectiveModel(), "dashscope/a", "过期失效模型会先被尝试");
 
-  runtime.markSkipped("a", {
+  runtime.markSkipped("dashscope/a", {
     kind: "forbidden",
     label: "无权限",
     status: 403,
@@ -174,25 +174,25 @@ test("a retried dead model that fails again goes back to waiting", async () => {
     markInvalid: false,
     retryable: true,
   });
-  assert.equal(runtime.effectiveModel(), "b", "再次失败后重新计时，让出位置");
+  assert.equal(runtime.effectiveModel(), "dashscope/b", "再次失败后重新计时，让出位置");
   await runtime.shutdown();
 });
 
 test("the context guard applies the learned calibration ratio", async () => {
   const { runtime } = await makeRuntime();
-  await runtime.updateChainModels(["a", "b"]);
+  await runtime.updateChainModels(["dashscope/a", "dashscope/b"]);
   await runtime.updateChainContext({ window: 1000 });
 
   const body = { messages: [{ role: "user", content: "word ".repeat(400) }] };
   // 让 a 学到 5 倍偏差：本地估算 400 左右，按系数会超过 1000
-  runtime.store.observeCalibration("a", false, 1000, 5000);
+  runtime.store.observeCalibration("dashscope/a", false, 1000, 5000);
 
-  const capped = await runtime.requestThrough({ path: "chat/completions", model: "a", body });
+  const capped = await runtime.requestThrough({ path: "chat/completions", model: "dashscope/a", body });
   assert.equal(capped.result.ok, false);
   assert.equal(capped.result.error.code, "switchyard.context_length_exceeded");
   assert.equal(capped.sample?.hasTools, false);
 
-  const uncapped = await runtime.requestThrough({ path: "chat/completions", model: "b", body });
+  const uncapped = await runtime.requestThrough({ path: "chat/completions", model: "dashscope/b", body });
   assert.equal(uncapped.result.ok, false);
   if (!uncapped.result.ok) {
     assert.notEqual(uncapped.result.error.code, "switchyard.context_length_exceeded");
@@ -203,12 +203,12 @@ test("the context guard applies the learned calibration ratio", async () => {
 
 test("markSuccess accumulates cost from the configured price tier", async () => {
   const { runtime } = await makeRuntime();
-  await runtime.updateChainModels(["a"]);
+  await runtime.updateChainModels(["dashscope/a"]);
   runtime.config.pricing = {
     currency: "CNY",
     unit: 1_000_000,
     models: {
-      a: {
+      "dashscope/a": {
         tiers: [
           { from: "00:00", to: "00:00", input: 2, cachedInput: 0.2, output: 8 },
         ],
@@ -216,7 +216,7 @@ test("markSuccess accumulates cost from the configured price tier", async () => 
     },
   };
 
-  runtime.markSuccess("a", {
+  runtime.markSuccess("dashscope/a", {
     promptTokens: 1_000,
     completionTokens: 100,
     totalTokens: 1_100,
@@ -225,11 +225,11 @@ test("markSuccess accumulates cost from the configured price tier", async () => 
   });
 
   assert.equal(runtime.store.stats.cost, 1_360 / 1_000_000);
-  assert.equal(runtime.store.get("a")?.cost, 1_360 / 1_000_000);
+  assert.equal(runtime.store.get("dashscope/a")?.cost, 1_360 / 1_000_000);
   assert.equal(runtime.store.callers()[0]?.cost, 1_360 / 1_000_000);
 
   // 没有价格配置的模型不计成本
-  runtime.markSuccess("b", {
+  runtime.markSuccess("dashscope/b", {
     promptTokens: 1_000,
     completionTokens: 100,
     totalTokens: 1_100,

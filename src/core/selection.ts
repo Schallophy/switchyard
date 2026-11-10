@@ -1,6 +1,7 @@
 import type { ChainConfig } from "../config/schema.ts";
 import type { ModelRecord } from "../types.ts";
 import { isThrottled } from "./meter.ts";
+import { splitModelCode } from "./model-code.ts";
 
 /**
  * - auto：使用当前选中的模型，失败后按模型列表的顺序回退
@@ -20,13 +21,22 @@ export function activeModel(chain: ChainConfig): string | null {
   return chain.models[0] ?? null;
 }
 
-export function resolveRoute(model: string | undefined, chain: ChainConfig): RouteResolution {
+export function resolveRoute(
+  model: string | undefined,
+  chain: ChainConfig,
+  providers?: Array<{ id: string }>,
+): RouteResolution {
   const requested = (model ?? "").trim();
   if (requested === "" || requested === "auto") {
     return { mode: "auto", model: activeModel(chain) };
   }
   if (chain.models.includes(requested)) {
     return { mode: "direct", model: requested };
+  }
+  // 裸模型名兼容：只在上游模型名唯一时命中，避免同名模型绑在不同提供商时选错
+  if (providers && providers.length > 0) {
+    const matches = chain.models.filter((code) => splitModelCode(code, providers)?.upstream === requested);
+    if (matches.length === 1 && matches[0]) return { mode: "direct", model: matches[0] };
   }
   return { mode: "passthrough", model: requested };
 }

@@ -2,6 +2,7 @@ import type { ApiKind, ChainConfig, ContextConfig, GatewayConfig, ProviderConfig
 import { saveConfig } from "./config/load.ts";
 import { ANONYMOUS_CALLER, CONSOLE_CALLER, type CallerIdentity } from "./core/caller.ts";
 import { apisFor as resolveApis, apiKindForPath, supportsApi as checkApi } from "./core/api.ts";
+import { joinModelCode, splitModelCode } from "./core/model-code.ts";
 import { EventLog } from "./core/events.ts";
 import { runFailover, type FailoverHooks, type FailoverResult } from "./core/failover.ts";
 import { priceTierAt, usageCost } from "./core/pricing.ts";
@@ -19,6 +20,7 @@ import type { AttemptRecord, AttemptOutcome, ModelRecord, NormalizedError, Usage
 import { ProviderClient, resolveKeyInfo, resolveProvider, keyInfoFor, type KeyInfo } from "./provider/client.ts";
 import { estimateRequestTokens } from "./util/context.ts";
 import type { Logger } from "./util/log.ts";
+import { familyOf } from "./util/model.ts";
 import { extractUsage } from "./util/usage.ts";
 
 const FAILURE_LABELS: Record<string, string> = {
@@ -47,6 +49,10 @@ export interface RuntimeOptions {
 
 export interface RuntimeSnapshotModel extends ModelRecord {
   apis: ApiKind[];
+  /** 绑定的提供商 id。 */
+  provider: string;
+  /** 发给上游的模型名（去掉提供商前缀）。 */
+  upstream: string;
 }
 
 export interface ChainSnapshot {
@@ -127,6 +133,8 @@ export class Runtime {
       onError: (error) => options.logger.warn("state persistence failed", { error: error instanceof Error ? error.message : String(error) }),
     });
     const runtime = new Runtime(options, store);
+    const aliases = collectModelAliases(options.config);
+    if (aliases.size > 0) store.migrateModelCodes((code) => aliases.get(code) ?? null);
     return runtime;
   }
 
@@ -153,14 +161,28 @@ export class Runtime {
     return this.config.providers.map((provider) => keyInfoFor(provider));
   }
 
-  /** 模型最终落到哪个提供商；未登记或登记失效时回落到默认提供商。 */
+  /** 模型绑定的提供商：code 形如 `提供商/模型名`；未带前缀的（透传请求）走默认提供商。 */
   providerFor(code: string): ProviderConfig | null {
-    const id = this.config.modelProviders[code];
-    return (id ? resolveProvider(this.config, id) : null) ?? resolveProvider(this.config);
+    const parsed = splitModelCode(code, this.config.providers);
+    if (parsed) return resolveProvider(this.config, parsed.provider);
+    return resolveProvider(this.config);
   }
 
   providerIdFor(code: string): string | undefined {
     return this.providerFor(code)?.id;
+  }
+
+  /** 发给上游的模型名：去掉 `提供商/` 前缀。 */
+  upstreamModelFor(code: string): string {
+    return splitModelCode(code, this.config.providers)?.upstream ?? code;
+  }
+
+  /** 把用户输入的模型名归一成 `提供商/模型名`；缺提供商时返回 null。 */
+  normalizeModelCode(raw: string): string | null {
+    const code = raw.trim();
+    const parsed = splitModelCode(code, this.config.providers);
+    if (!parsed) return null;
+    return joinModelCode(parsed.provider, parsed.upstream);
   }
 
   apisFor(code: string): ApiKind[] {
@@ -200,7 +222,7 @@ export class Runtime {
   }
 
   allCodes(): string[] {
-    const codes = new Set<string>([...this.chainCodes(), ...this.store.catalog.models.map((item) => item.id)]);
+    const codes = new Set<string>([...this.chainCodes(), ...this.store.catalog.models.map((item) => item.code)]);
     return [...codes];
   }
 
@@ -226,9 +248,14 @@ export class Runtime {
       throttledUntil: null,
     };
     const value = record ?? empty;
+    const upstream = this.upstreamModelFor(code);
+    const family = familyOf(upstream);
     return {
       ...value,
+      family: family === "Other" ? value.family : family,
       apis: this.apisFor(code),
+      provider: this.providerIdFor(code) ?? this.config.defaultProvider,
+      upstream,
     };
   }
 
@@ -332,7 +359,7 @@ export class Runtime {
   }): Promise<RoutedResult> {
     const api = apiKindForPath(input.path);
     const chain = this.config.chain;
-    const route = resolveRoute(input.model, chain);
+    const route = resolveRoute(input.model, chain, this.config.providers);
 
     const hasTools =
       (Array.isArray(input.body.tools) && input.body.tools.length > 0) ||
@@ -480,7 +507,7 @@ export class Runtime {
     const attemptWith =
       (body: Record<string, unknown>) =>
       (model: string, signal?: AbortSignal): Promise<AttemptOutcome> =>
-        this.client.attempt(input.path, model, body, {
+        this.client.attempt(input.path, this.upstreamModelFor(model), body, {
           signal,
           providerId: this.providerIdFor(model),
         });
@@ -699,7 +726,14 @@ export class Runtime {
 
   async updateChainModels(models: string[]): Promise<void> {
     const chain = this.config.chain;
-    const next = dedupeCodes(models);
+    const next: string[] = [];
+    for (const raw of models) {
+      const code = this.normalizeModelCode(raw);
+      if (!code) {
+        throw new ConfigRuleError(`模型 ${raw} 没有指定提供商，请写成「提供商/模型名」`);
+      }
+      if (!next.includes(code)) next.push(code);
+    }
     const previous = chain.models;
     const added = next.filter((code) => !previous.includes(code));
     const removed = previous.filter((code) => !next.includes(code));
@@ -736,30 +770,17 @@ export class Runtime {
   }
 
   async updateModelApis(code: string, apis: ApiKind[]): Promise<void> {
-    this.config.modelApis[code] = [...apis];
+    const model = this.normalizeModelCode(code);
+    if (!model) throw new ConfigRuleError(`模型 ${code} 没有指定提供商，请写成「提供商/模型名」`);
+    this.config.modelApis[model] = [...apis];
     await saveConfig(this.configPath, this.config);
     this.events.push({
       kind: "config",
       level: "info",
-      message: `${code} 的 API 能力已更新为 ${apis.join(" / ")}`,
-      model: code,
+      message: `${model} 的 API 能力已更新为 ${apis.join(" / ")}`,
+      model,
       detail: { apis },
     });
-  }
-
-  async updateModelProvider(code: string, providerId: string | null): Promise<string> {
-    const target = providerId?.trim().toLowerCase() ?? null;
-    if (target && !this.config.providers.some((provider) => provider.id === target)) {
-      throw new ConfigRuleError(`提供商不存在：${target}`);
-    }
-    if (target) this.config.modelProviders[code] = target;
-    else delete this.config.modelProviders[code];
-
-    const effective = this.providerFor(code)?.id ?? this.config.defaultProvider;
-    await this.#persistConfig(
-      target ? `${code} 改走提供商 ${target}` : `${code} 回落到默认提供商 ${effective}`,
-    );
-    return effective;
   }
 
   #normalizeContext(patch: Partial<ContextConfig> | undefined, fallback: ContextConfig): ContextConfig {
@@ -859,20 +880,30 @@ function isChatPath(path: string): boolean {
   return path === "chat/completions" || path === "completions" || path === "responses";
 }
 
-function dedupeCodes(models: string[]): string[] {
-  const out: string[] = [];
-  for (const entry of models) {
-    if (typeof entry !== "string") continue;
-    const code = entry.trim();
-    if (code && !out.includes(code)) out.push(code);
-  }
-  return out;
-}
-
 function collectCodes(config: GatewayConfig, extra: string[]): string[] {
   const codes = new Set<string>(extra);
   for (const code of config.chain.models) codes.add(code);
   return [...codes];
+}
+
+/**
+ * 旧状态文件里的裸模型名 → 新的 `提供商/模型名`。只有在上游模型名唯一时才能无歧义迁移，
+ * 同名模型挂在两个提供商下时保持原样，避免把用量记到错误的模型上。
+ */
+function collectModelAliases(config: GatewayConfig): Map<string, string> {
+  const byUpstream = new Map<string, string[]>();
+  for (const code of config.chain.models) {
+    const parsed = splitModelCode(code, config.providers);
+    if (!parsed) continue;
+    const list = byUpstream.get(parsed.upstream) ?? [];
+    list.push(code);
+    byUpstream.set(parsed.upstream, list);
+  }
+  const aliases = new Map<string, string>();
+  for (const [upstream, codes] of byUpstream) {
+    if (codes.length === 1 && codes[0]) aliases.set(upstream, codes[0]);
+  }
+  return aliases;
 }
 
 function summarizeAttempts(attempts: AttemptRecord[]): Array<Record<string, unknown>> {
