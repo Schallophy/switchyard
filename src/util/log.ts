@@ -12,6 +12,8 @@ export interface Logger {
   info(message: string, fields?: LogFields): void;
   warn(message: string, fields?: LogFields): void;
   error(message: string, fields?: LogFields): void;
+  /** 访问日志：终端压成一行，文件里保留 method / path / status / ms。 */
+  access(method: string, path: string, status: number, ms: number): void;
   child(bindings: LogFields): Logger;
 }
 
@@ -25,7 +27,17 @@ const COLOR: Record<LogLevel, string> = {
 };
 
 const DIM = "\u001b[38;5;240m";
+const GREEN = "\u001b[38;5;114m";
+const YELLOW = "\u001b[38;5;214m";
+const RED = "\u001b[38;5;167m";
 const RESET = "\u001b[0m";
+
+/** 重定向到文件或管道时不要塞 ANSI 序列；NO_COLOR 也一样。 */
+const COLOR_ENABLED = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
+
+function paint(code: string, text: string): string {
+  return COLOR_ENABLED ? `${code}${text}${RESET}` : text;
+}
 
 export function parseLogLevel(value: string | undefined): LogLevel {
   if (value === "debug" || value === "info" || value === "warn" || value === "error") return value;
@@ -38,6 +50,13 @@ function pad(value: number): string {
 
 function clock(date: Date): string {
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+/** 太长的耗时换成秒，免得一列数字宽度乱跳。 */
+function duration(ms: number): string {
+  if (ms >= 10_000) return `${Math.round(ms / 1000)}s`;
+  if (ms >= 1_000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.round(ms)}ms`;
 }
 
 function stringify(value: unknown): string {
@@ -72,21 +91,30 @@ export function createLogger(options: LoggerOptions = {}): Logger {
   let queue: Promise<unknown> = Promise.resolve();
   let directoryReady: Promise<unknown> | null = null;
 
+  function append(record: Record<string, unknown>): void {
+    if (!options.file) return;
+    const line = JSON.stringify(record);
+    const file = options.file;
+    directoryReady ??= mkdir(dirname(file), { recursive: true });
+    queue = queue
+      .then(() => directoryReady)
+      .then(() => appendFile(file, `${line}\n`))
+      .catch(() => undefined);
+  }
+
   function write(levelName: LogLevel, bindings: LogFields, message: string, fields?: LogFields): void {
     if (ORDER[levelName] < ORDER[level]) return;
     const now = new Date();
     const merged = { ...bindings, ...fields };
 
-    if (options.file) {
-      const line = JSON.stringify({ at: now.toISOString(), level: levelName, message, ...merged });
-      const file = options.file;
-      directoryReady ??= mkdir(dirname(file), { recursive: true });
-      queue = queue.then(() => directoryReady).then(() => appendFile(file, `${line}\n`)).catch(() => undefined);
-    }
+    append({ at: now.toISOString(), level: levelName, message, ...merged });
 
     if (pretty) {
       process.stdout.write(
-        `${DIM}${clock(now)}${RESET} ${COLOR[levelName]}${levelName.toUpperCase().padEnd(5)}${RESET} ${message}${DIM}${renderFields(merged)}${RESET}\n`,
+        `${paint(DIM, clock(now))} ${paint(COLOR[levelName], levelName.toUpperCase().padEnd(5))} ${message}${paint(
+          DIM,
+          renderFields(merged),
+        )}\n`,
       );
     }
   }
@@ -97,6 +125,20 @@ export function createLogger(options: LoggerOptions = {}): Logger {
       info: (message, fields) => write("info", bindings, message, fields),
       warn: (message, fields) => write("warn", bindings, message, fields),
       error: (message, fields) => write("error", bindings, message, fields),
+      access: (method, path, status, ms) => {
+        if (ORDER.info < ORDER[level]) return;
+        const now = new Date();
+        append({ at: now.toISOString(), level: "info", message: "api request", method, path, status, ms });
+
+        if (!pretty) return;
+        const tone = status >= 500 ? RED : status >= 400 ? YELLOW : GREEN;
+        process.stdout.write(
+          `${paint(DIM, clock(now))}  ${method.padEnd(4)} ${path}  ${paint(tone, String(status))} ${paint(
+            DIM,
+            duration(ms),
+          )}\n`,
+        );
+      },
       child: (extra) => make({ ...bindings, ...extra }),
     };
   }

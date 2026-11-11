@@ -17,6 +17,12 @@
 
 import { estimateRequestTokens } from "../src/util/context.ts";
 
+try {
+  process.loadEnvFile();
+} catch (error) {
+  if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+}
+
 const URL = (process.env.SWITCHYARD_CALIBRATION_URL ?? "http://127.0.0.1:8788/v1").replace(/\/+$/, "");
 const MODEL = process.env.SWITCHYARD_CALIBRATION_MODEL ?? "auto";
 const KEY = process.env.SWITCHYARD_CALIBRATION_KEY ?? "sk-calibration";

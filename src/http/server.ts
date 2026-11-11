@@ -213,7 +213,7 @@ export function createServer(runtime: Runtime, logger: Logger): Server {
     } finally {
       const duration = Math.round(performance.now() - started);
       if (isApi && req.method !== "OPTIONS") {
-        logger.info("api request", { method: req.method, path: url.pathname, status: res.statusCode, ms: duration });
+        logger.access(req.method ?? "GET", url.pathname, res.statusCode, duration);
       } else {
         logger.debug("http request", { method: req.method, path: url.pathname, status: res.statusCode, ms: duration });
       }

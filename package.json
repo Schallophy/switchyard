@@ -8,11 +8,11 @@
     "node": ">=22.18.0"
   },
   "scripts": {
-    "start": "node --env-file-if-exists=.env src/index.ts",
-    "dev": "node --watch --env-file-if-exists=.env src/index.ts",
+    "start": "node src/index.ts",
+    "dev": "node --watch src/index.ts",
     "mock": "node test/mock-provider.ts",
     "test": "node --test \"test/**/*.test.ts\"",
-    "calibrate": "node --env-file-if-exists=.env scripts/calibrate-tokenizer.ts",
+    "calibrate": "node scripts/calibrate-tokenizer.ts",
     "typecheck": "tsc --noEmit"
   }
 }

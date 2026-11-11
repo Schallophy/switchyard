@@ -46,6 +46,32 @@ cp .env.example .env       # 1. 填 DASHSCOPE_API_KEY=sk-...
 
 > `npm run dev` 使用 `--watch` 热重启；`npm run mock` 启动本地模拟提供商（端口 9911），用于离线试用。
 
+### 控制台输出
+
+`npm start` 会先打印启动摘要（网关地址、看板、配置与数据目录、提供商/Key 状态、当前模型），然后才输出警告和访问日志：
+
+```text
+◈ Switchyard v0.1.0
+  gateway  http://127.0.0.1:8788/v1
+  admin    http://127.0.0.1:8788
+  config   /path/to/config.json
+  data     /path/to/data
+  provider 2 个：dashscope, qianwenai
+  auth     2/2 个提供商已配置
+  models   1 个 · 当前 qianwenai/deepseek-v4.1-flash-1017
+  log      /path/to/data/switchyard.log
+
+就绪 · 按 Ctrl+C 停止
+
+08:32:49  POST /v1/chat/completions  200 8.4s
+```
+
+- 访问日志每行一条，写入 `switchyard.log` 的 JSON 版本保留 `method` / `path` / `status` / `ms` 字段。
+- 输出到终端时带颜色；重定向到文件或设置 `NO_COLOR=1` 时自动去掉 ANSI 序列。
+- `.env` 由程序自动加载（存在才读），不再需要 `--env-file` 参数，也不会在缺少 `.env` 时打印提示。
+- npm 自己会打印 `> switchyard@0.1.0 start` 两行；想只看应用输出可以用 `npm start --silent`，或直接 `node src/index.ts`。
+- 配置迁移等提示只在启动时输出，重复提示说明 `config.json` 还是旧格式——在看板里保存一次即可写回新格式。
+
 ### Key 从哪来
 
 Key 不是启动的硬性条件：进程、看板、`/v1/models` 都不需要它，缺 Key 只有转发请求时才会失败。每个提供商按下面的顺序取：

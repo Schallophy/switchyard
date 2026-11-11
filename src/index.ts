@@ -4,10 +4,22 @@ import { createServer } from "./http/server.ts";
 import { Runtime } from "./runtime.ts";
 import { createLogger, parseLogLevel } from "./util/log.ts";
 
+// 有 .env 就加载，没有就安静跳过（Node 的 --env-file-if-exists 会往 stderr 打印提示）
+try {
+  process.loadEnvFile();
+} catch (error) {
+  if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+}
+
 const VERSION = "0.1.0";
+const COLOR = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
 const ACCENT = "\u001b[38;5;179m";
 const DIM = "\u001b[38;5;240m";
 const RESET = "\u001b[0m";
+
+function paint(code: string, text: string): string {
+  return COLOR ? `${code}${text}${RESET}` : text;
+}
 
 async function main(): Promise<void> {
   const configPath = resolve(process.env.SWITCHYARD_CONFIG?.trim() || "config.json");
@@ -47,8 +59,6 @@ async function main(): Promise<void> {
     warnings: [...loaded.warnings, ...overrides.warnings],
   });
 
-  for (const warning of runtime.warnings) logger.warn(warning);
-
   const server = createServer(runtime, logger);
   await new Promise<void>((resolveListen, rejectListen) => {
     const onError = (error: NodeJS.ErrnoException): void => {
@@ -67,6 +77,9 @@ async function main(): Promise<void> {
 
   server.on("error", (error) => logger.error("server error", { error: error.message }));
   banner(runtime);
+  for (const warning of runtime.warnings) logger.warn(warning);
+  if (runtime.warnings.length > 0) process.stdout.write("\n");
+  process.stdout.write(`${paint(DIM, "就绪 · 按 Ctrl+C 停止")}\n\n`);
   await runtime.bootstrap();
 
   let closing = false;
@@ -105,14 +118,21 @@ function banner(runtime: Runtime): void {
         ? `${configured[0].source === "env" ? "环境变量" : "config.json"} · ${configured[0].masked}`
         : "未配置 · 按需再填即可"
       : `${configured.length}/${infos.length} 个提供商已配置`;
+  const logFile = runtime.config.log.file.trim()
+    ? resolve(runtime.config.log.file.trim())
+    : resolve(runtime.dataDir, "switchyard.log");
+
+  const row = (label: string, value: string): string => `${paint(DIM, `  ${label.padEnd(9)}`)}${value}`;
   const lines = [
-    `${ACCENT}◈ Switchyard${RESET} ${DIM}v${VERSION}${RESET}`,
-    `${DIM}  gateway  ${RESET}${base}/v1`,
-    `${DIM}  admin    ${RESET}${ui ? base : "已关闭（ui.enabled = false）"}`,
-    `${DIM}  config   ${RESET}${runtime.configPath}${ui ? "" : DIM + "  ← 唯一配置入口" + RESET}`,
-    `${DIM}  provider ${RESET}${providers}`,
-    `${DIM}  auth     ${RESET}${auth}`,
-    `${DIM}  models   ${RESET}${runtime.chainCodes().length} 个模型 · 当前 ${runtime.activeModel() ?? "未选择"}`,
+    `${paint(ACCENT, "◈ Switchyard")} ${paint(DIM, `v${VERSION}`)}`,
+    row("gateway", `${base}/v1`),
+    row("admin", ui ? base : "已关闭（ui.enabled = false）"),
+    row("config", `${runtime.configPath}${ui ? "" : paint(DIM, "  ← 唯一配置入口")}`),
+    row("data", runtime.dataDir),
+    row("provider", providers),
+    row("auth", auth),
+    row("models", `${runtime.chainCodes().length} 个 · 当前 ${runtime.activeModel() ?? "未选择"}`),
+    row("log", logFile),
     "",
   ];
   process.stdout.write(`${lines.join("\n")}\n`);

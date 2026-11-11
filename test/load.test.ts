@@ -80,6 +80,7 @@ const logger: Logger = {
   info: () => undefined,
   warn: () => undefined,
   error: () => undefined,
+  access: () => undefined,
   child: () => logger,
 };
 

@@ -375,22 +375,6 @@ function readLegacyBindings(
   return map;
 }
 
-/** 把任意写法归一成 `提供商/模型名`：已带前缀的保持不变，旧的不带前缀按旧映射或默认提供商补齐。 */
-function normalizeModelCode(
-  raw: string,
-  providers: ProviderConfig[],
-  bindings: Record<string, string>,
-  fallbackProvider: string,
-  warnings: string[] | null,
-): string {
-  const code = raw.trim();
-  const parsed = splitModelCode(code, providers);
-  if (parsed) return joinModelCode(parsed.provider, parsed.upstream);
-  const provider = bindings[code] ?? fallbackProvider;
-  warnings?.push(`模型 ${code} 已绑定到提供商 ${provider}`);
-  return joinModelCode(provider, code);
-}
-
 function readContext(item: Obj, path: string, errors: string[]): ContextConfig {
   if (item.context !== undefined && !isObj(item.context)) {
     errors.push(`${path}.context 必须是对象`);
@@ -449,6 +433,14 @@ function readChain(
   }
 
   const models: string[] = [];
+  const migrated = new Set<string>();
+  const normalize = (value: string): string => {
+    const parsed = splitModelCode(value, providers);
+    if (parsed) return joinModelCode(parsed.provider, parsed.upstream);
+    migrated.add(value.trim());
+    return joinModelCode(bindings[value.trim()] ?? fallbackProvider, value);
+  };
+
   const rawModels = raw.models;
   if (rawModels !== undefined && !Array.isArray(rawModels)) {
     errors.push("chain.models 必须是数组");
@@ -458,7 +450,7 @@ function readChain(
         warnings.push("chain.models 忽略了非法条目");
         continue;
       }
-      const code = normalizeModelCode(entry, providers, bindings, fallbackProvider, warnings);
+      const code = normalize(entry);
       if (!models.includes(code)) models.push(code);
     }
   }
@@ -467,11 +459,15 @@ function readChain(
   if (!active) {
     active = models[0] ?? "";
   } else {
-    active = normalizeModelCode(active, providers, bindings, fallbackProvider, warnings);
+    active = normalize(active);
     if (!models.includes(active)) {
       warnings.push(`当前模型 ${active} 不在模型列表里，已改为 ${models[0] ?? "（空）"}`);
       active = models[0] ?? "";
     }
+  }
+
+  if (migrated.size > 0) {
+    warnings.push(`已为 ${migrated.size} 个模型补全提供商标识（保存一次配置后写回新格式）`);
   }
 
   return {
@@ -542,7 +538,7 @@ function readModelApis(
       map[code] = API_KINDS.filter((kind) => apis.includes(kind));
     }
     if (dropped > 0) {
-      warnings.push(`modelApis 中有 ${dropped} 个条目没有对应已绑定提供商的模型，已忽略`);
+      warnings.push(`modelApis 中 ${dropped} 个旧条目不指向已加入的模型，已清理`);
     }
   }
 
@@ -769,5 +765,5 @@ export function normalizeConfig(input: unknown): NormalizeResult {
   config.pricing = readPricing(source, config.providers, bindings, errors, warnings);
   config.responsesChaining = readResponsesChaining(source, errors);
 
-  return { ok: errors.length === 0, config, errors, warnings };
+  return { ok: errors.length === 0, config, errors: [...new Set(errors)], warnings: [...new Set(warnings)] };
 }
