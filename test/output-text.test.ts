@@ -134,6 +134,37 @@ test("assembles chat tool calls streamed across deltas", () => {
   assert.deepEqual(extractor.getToolCalls(), [{ name: "lookup", arguments: '{"q":"x"}' }]);
 });
 
+test("assembles responses function calls streamed across events", () => {
+  const extractor = new SseOutputExtractor("responses");
+  extractor.push(
+    'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","name":"lookup","arguments":""}}\n\n',
+  );
+  assert.equal(
+    extractor.push(
+      'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"{\\"q\\":"}\n\n',
+    ),
+    "",
+  );
+  assert.equal(
+    extractor.push(
+      'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"\\"x\\"}"}\n\n',
+    ),
+    "",
+  );
+  extractor.push(
+    'data: {"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","name":"lookup","arguments":"{\\"q\\":\\"x\\"}"}}\n\n',
+  );
+  assert.deepEqual(extractor.getToolCalls(), [{ name: "lookup", arguments: '{"q":"x"}' }]);
+});
+
+test("falls back to function calls in the completed responses payload", () => {
+  const extractor = new SseOutputExtractor("responses");
+  extractor.push(
+    'data: {"type":"response.completed","response":{"output":[{"type":"function_call","name":"search","arguments":"{}"}]}}\n\n',
+  );
+  assert.deepEqual(extractor.getToolCalls(), [{ name: "search", arguments: "{}" }]);
+});
+
 test("returns null finish reason when provider did not report one", () => {
   const extractor = new SseOutputExtractor("chat");
   extractor.push('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n');

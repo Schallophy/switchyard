@@ -83,8 +83,8 @@ export class SseOutputExtractor {
   #buffer = "";
   #hasText = false;
   #finishReason: string | null = null;
-  /** 流式工具调用是按 index 分片下发的，这里先把名字和参数拼回来。 */
-  #toolCalls = new Map<number, { name: string; args: string }>();
+  /** 流式工具调用按调用分片下发，这里先把名字和参数拼回来。 */
+  #toolCalls = new Map<string, { name: string; args: string; order: number }>();
 
   constructor(api: ApiKind) {
     this.#api = api;
@@ -124,22 +124,26 @@ export class SseOutputExtractor {
     return this.#finishReason;
   }
 
-  /** 已累积的工具调用，按 index 排序；没有则为空数组。 */
+  /** 已累积的工具调用，按输出顺序排列；没有则为空数组。 */
   getToolCalls(): OutputToolCall[] {
-    return [...this.#toolCalls]
-      .sort((a, b) => a[0] - b[0])
-      .filter(([, call]) => call.name.length > 0)
-      .map(([, call]) => ({ name: call.name, arguments: call.args }));
+    return [...this.#toolCalls.values()]
+      .sort((a, b) => a.order - b.order)
+      .filter((call) => call.name.length > 0)
+      .map((call) => ({ name: call.name, arguments: call.args }));
   }
 
-  /** 工具调用的名字和参数可能拆在多个 delta 里，按 index 累加后再在流结束时输出。 */
+  /** Chat 的工具调用按 index 分片，Responses 按 item id 分片。 */
   #collectToolCalls(value: unknown): void {
     if (!Array.isArray(value)) return;
     for (const call of value) {
       if (!call || typeof call !== "object") continue;
       const recordCall = call as Record<string, unknown>;
-      const index = typeof recordCall.index === "number" ? recordCall.index : 0;
-      const acc = this.#toolCalls.get(index) ?? { name: "", args: "" };
+      const index =
+        typeof recordCall.index === "number" && Number.isFinite(recordCall.index)
+          ? recordCall.index
+          : 0;
+      const key = `chat:${index}`;
+      const acc = this.#toolCalls.get(key) ?? { name: "", args: "", order: index };
       const fn = recordCall.function;
       if (fn && typeof fn === "object") {
         const fnRecord = fn as Record<string, unknown>;
@@ -148,7 +152,7 @@ export class SseOutputExtractor {
         }
         if (typeof fnRecord.arguments === "string") acc.args += fnRecord.arguments;
       }
-      this.#toolCalls.set(index, acc);
+      this.#toolCalls.set(key, acc);
     }
   }
 
@@ -203,26 +207,103 @@ export class SseOutputExtractor {
 
     if (this.#api === "responses") {
       const type = typeof record.type === "string" ? record.type : "";
+
+      if (type === "response.output_item.added" || type === "response.output_item.done") {
+        const item = record.item;
+        if (item && typeof item === "object") {
+          const entry = item as Record<string, unknown>;
+          if (entry.type === "function_call") {
+            const key = responseCallKey(record) ?? "responses:#0";
+            const acc = this.#toolCalls.get(key) ?? {
+              name: "",
+              args: "",
+              order: responseCallOrder(record),
+            };
+            if (typeof entry.name === "string" && entry.name) acc.name = entry.name;
+            if (typeof entry.arguments === "string" && entry.arguments) {
+              // done 事件里的参数是完整值，优先于分片累加的结果。
+              acc.args = entry.arguments;
+            }
+            this.#toolCalls.set(key, acc);
+          }
+        }
+      } else if (type === "response.function_call_arguments.delta") {
+        const key = responseCallKey(record) ?? "responses:#0";
+        if (typeof record.delta === "string" && record.delta) {
+          const acc = this.#toolCalls.get(key) ?? {
+            name: "",
+            args: "",
+            order: responseCallOrder(record),
+          };
+          acc.args += record.delta;
+          this.#toolCalls.set(key, acc);
+        }
+      } else if (type === "response.function_call_arguments.done") {
+        const key = responseCallKey(record) ?? "responses:#0";
+        if (typeof record.arguments === "string") {
+          const acc = this.#toolCalls.get(key) ?? {
+            name: "",
+            args: "",
+            order: responseCallOrder(record),
+          };
+          acc.args = record.arguments;
+          this.#toolCalls.set(key, acc);
+        }
+      }
+
       if (typeof record.delta === "string" && type.includes("output_text.delta")) return record.delta;
       if (typeof record.delta === "string" && type.includes("refusal.delta")) return record.delta;
 
-      // 有些兼容实现不发 delta，只在完成事件里给全文。
-      if (!this.#hasText) {
-        if (type === "response.output_text.done" && typeof record.text === "string") {
-          this.#finishReason = "done";
-          return record.text;
+      if (type === "response.output_text.done") {
+        this.#finishReason = "done";
+        if (!this.#hasText && typeof record.text === "string") return record.text;
+        return "";
+      }
+
+      if (type === "response.completed") {
+        this.#finishReason = "completed";
+        // 有些实现只在完成事件里带完整的工具调用。
+        if (this.#toolCalls.size === 0 && record.response) {
+          const calls = extractToolCalls("responses", record.response);
+          calls.forEach((call, index) => {
+            this.#toolCalls.set(`responses:completed:${index}`, {
+              name: call.name,
+              args: call.arguments,
+              order: index,
+            });
+          });
         }
-        if (type === "response.completed") {
-          this.#finishReason = "completed";
-          if (record.response) {
-            return responsesOutput(record.response as Record<string, unknown>) ?? "";
-          }
+        if (!this.#hasText && record.response) {
+          return responsesOutput(record.response as Record<string, unknown>) ?? "";
         }
       }
     }
 
     return "";
   }
+}
+
+function responseCallKey(record: Record<string, unknown>): string | null {
+  const itemId = record.item_id;
+  if (typeof itemId === "string" && itemId) return `responses:${itemId}`;
+
+  const item = record.item;
+  if (item && typeof item === "object") {
+    const id = (item as Record<string, unknown>).id;
+    if (typeof id === "string" && id) return `responses:${id}`;
+  }
+
+  const outputIndex = record.output_index;
+  if (typeof outputIndex === "number" && Number.isFinite(outputIndex)) {
+    return `responses:#${outputIndex}`;
+  }
+  return null;
+}
+
+function responseCallOrder(record: Record<string, unknown>): number {
+  const outputIndex = record.output_index;
+  if (typeof outputIndex === "number" && Number.isFinite(outputIndex)) return outputIndex;
+  return 0;
 }
 
 function chatOutput(record: Record<string, unknown>): string | null {

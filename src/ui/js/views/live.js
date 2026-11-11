@@ -277,7 +277,6 @@ function filteredSessions() {
 
 const TOOL_LABELS = {
   shell: "命令",
-  bash: "命令",
   write: "写入",
   edit: "编辑",
   read: "读取",
@@ -286,6 +285,35 @@ const TOOL_LABELS = {
   webfetch: "抓取",
   task: "子任务",
   list: "目录",
+  apply_patch: "补丁",
+};
+
+/** 不同客户端对同一类工具的叫法不一样，先归一到能识别的类型。 */
+const TOOL_ALIASES = {
+  bash: "shell",
+  execute_command: "shell",
+  run_command: "shell",
+  run_shell_command: "shell",
+  execute_bash: "shell",
+  exec: "shell",
+  terminal: "shell",
+  replace_in_file: "edit",
+  str_replace_editor: "edit",
+  str_replace: "edit",
+  read_file: "read",
+  view_file: "read",
+  open_file: "read",
+  write_file: "write",
+  write_to_file: "write",
+  create_file: "write",
+  search_files: "grep",
+  ripgrep: "grep",
+  list_files: "list",
+  list_directory: "list",
+  list_dir: "list",
+  ls: "list",
+  web_fetch: "webfetch",
+  fetch: "webfetch",
 };
 
 function parseToolArgs(value) {
@@ -296,6 +324,32 @@ function parseToolArgs(value) {
   } catch {
     return null;
   }
+}
+
+function pick(source, keys) {
+  if (!source || typeof source !== "object") return undefined;
+  for (const key of keys) {
+    const value = source[key];
+    if (value !== undefined && value !== null && value !== "") return value;
+  }
+  return undefined;
+}
+
+function textOf(value) {
+  if (value === undefined || value === null) return "";
+  if (Array.isArray(value)) {
+    return value.map((part) => (typeof part === "string" ? part : JSON.stringify(part))).join(" ");
+  }
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+/** Cline / Roo 的 replace_in_file 用 SEARCH / REPLACE 分隔符表达改动。 */
+function parseSearchReplace(diff) {
+  if (typeof diff !== "string") return null;
+  const match = /-{7} SEARCH\r?\n([\s\S]*?)\r?\n={7}\r?\n([\s\S]*?)\r?\n\+{7} REPLACE/.exec(diff);
+  if (!match) return null;
+  return { oldText: match[1], newText: match[2] };
 }
 
 function clipText(value, max = 500) {
@@ -324,7 +378,7 @@ function prettyArgs(args) {
 }
 
 /** 把工具调用渲染成人能直接读的摘要，完整 JSON 仍可在原始响应里查。 */
-function toolCallHtml(call) {
+export function toolCallHtml(call) {
   const name = typeof call?.name === "string" && call.name ? call.name : "tool";
   const args = typeof call?.arguments === "string" ? call.arguments : "";
   const parsed = parseToolArgs(args);
@@ -339,11 +393,17 @@ function toolCallHtml(call) {
     parts.push(`<p class="live-call-note">${esc(value)}</p>`);
   };
 
+  let kind = TOOL_ALIASES[name] ?? name;
+  if (name === "str_replace_editor" && parsed) {
+    const action = typeof parsed.command === "string" ? parsed.command : "";
+    if (action === "view") kind = "read";
+    else if (action === "create") kind = "write";
+  }
+
   if (parsed) {
-    switch (name) {
-      case "shell":
-      case "bash": {
-        const command = parsed.command ?? parsed.cmd ?? "";
+    switch (kind) {
+      case "shell": {
+        const command = textOf(pick(parsed, ["command", "cmd", "commands", "script"]));
         if (command) {
           parts.push(
             `<code class="live-call-line live-call-command"><span class="live-call-prompt">$</span> ${esc(
@@ -352,16 +412,46 @@ function toolCallHtml(call) {
           );
         }
         const extras = [];
-        if (parsed.workdir) extras.push(`目录 ${clipText(parsed.workdir, 180)}`);
-        if (parsed.timeout) extras.push(`超时 ${clipText(parsed.timeout, 20)} ms`);
-        if (parsed.description) extras.push(clipText(parsed.description, 180));
+        const workdir = textOf(
+          pick(parsed, ["workdir", "cwd", "working_directory", "workingDirectory"]),
+        );
+        if (workdir) extras.push(`目录 ${clipText(workdir, 180)}`);
+        const timeout = pick(parsed, ["timeout", "timeout_ms", "timeoutMs"]);
+        if (timeout !== undefined) extras.push(`超时 ${clipText(timeout, 20)} ms`);
+        const description = textOf(pick(parsed, ["description"]));
+        if (description) extras.push(clipText(description, 180));
         note(extras.join(" · "));
         break;
       }
       case "edit": {
-        line(parsed.path ?? parsed.filePath ?? parsed.file_path, "live-call-path");
-        const oldText = parsed.oldString ?? parsed.old_string ?? parsed.oldText ?? "";
-        const newText = parsed.newString ?? parsed.new_string ?? parsed.newText ?? "";
+        const path = textOf(
+          pick(parsed, [
+            "path",
+            "filePath",
+            "file_path",
+            "file",
+            "filename",
+            "target_file",
+            "targetFile",
+          ]),
+        );
+        line(path, "live-call-path");
+
+        let oldText = textOf(
+          pick(parsed, ["oldString", "old_string", "old_str", "oldText", "old_text", "search", "old"]),
+        );
+        let newText = textOf(
+          pick(parsed, ["newString", "new_string", "new_str", "newText", "new_text", "replace", "new"]),
+        );
+        const diffText = textOf(pick(parsed, ["diff", "patch", "input"]));
+        if ((!oldText || !newText) && diffText) {
+          const parsedDiff = parseSearchReplace(diffText);
+          if (parsedDiff) {
+            oldText = parsedDiff.oldText;
+            newText = parsedDiff.newText;
+          }
+        }
+
         if (oldText || newText) {
           const diff = [];
           if (oldText) diff.push(`<span class="live-call-del">− ${esc(firstLine(oldText))}</span>`);
@@ -372,54 +462,84 @@ function toolCallHtml(call) {
               countLines(newText),
             )}</span><span class="live-call-del">-${fmtInt(countLines(oldText))}</span></p>`,
           );
+        } else if (diffText) {
+          note(`补丁 ${fmtInt(countLines(diffText))} 行`);
         }
         break;
       }
       case "write": {
-        line(parsed.path ?? parsed.filePath ?? parsed.file_path, "live-call-path");
-        if (typeof parsed.content === "string") {
+        const path = textOf(
+          pick(parsed, ["path", "filePath", "file_path", "file", "filename", "target_file", "targetFile"]),
+        );
+        line(path, "live-call-path");
+        const content = textOf(
+          pick(parsed, ["content", "file_text", "fileText", "file_content", "text"]),
+        );
+        if (content) {
           parts.push(
             `<p class="live-call-note live-call-stat"><span class="live-call-add">+${fmtInt(
-              countLines(parsed.content),
-            )}</span><span>${fmtInt(parsed.content.length)} 字符</span></p>`,
+              countLines(content),
+            )}</span><span>${fmtInt(content.length)} 字符</span></p>`,
           );
         }
         break;
       }
       case "read": {
-        line(parsed.path ?? parsed.filePath ?? parsed.file_path, "live-call-path");
+        const path = textOf(
+          pick(parsed, ["path", "filePath", "file_path", "file", "filename", "target_file", "targetFile"]),
+        );
+        line(path, "live-call-path");
         const extras = [];
         if (parsed.offset !== undefined) extras.push(`从第 ${fmtInt(parsed.offset)} 行`);
         if (parsed.limit !== undefined) extras.push(`读 ${fmtInt(parsed.limit)} 行`);
+        if (parsed.range !== undefined) extras.push(`范围 ${clipText(textOf(parsed.range), 60)}`);
         note(extras.join(" · "));
         break;
       }
       case "grep": {
-        line(parsed.pattern, "live-call-pattern");
+        line(textOf(pick(parsed, ["pattern", "regex", "query", "search"])), "live-call-pattern");
         const extras = [];
-        if (parsed.path) extras.push(clipText(parsed.path, 180));
-        if (parsed.include) extras.push(`匹配 ${clipText(parsed.include, 80)}`);
-        if (parsed.glob) extras.push(`glob ${clipText(parsed.glob, 80)}`);
+        const path = textOf(pick(parsed, ["path", "filePath", "file_path", "directory", "dir"]));
+        if (path) extras.push(clipText(path, 180));
+        const include = textOf(pick(parsed, ["include", "glob", "file_pattern", "filePattern"]));
+        if (include) extras.push(`匹配 ${clipText(include, 80)}`);
         note(extras.join(" · "));
         break;
       }
       case "glob": {
-        line(parsed.pattern, "live-call-pattern");
-        if (parsed.path) note(clipText(parsed.path, 200));
+        line(textOf(pick(parsed, ["pattern", "glob", "query"])), "live-call-pattern");
+        const path = textOf(pick(parsed, ["path", "directory", "dir"]));
+        if (path) note(clipText(path, 200));
         break;
       }
       case "webfetch": {
-        line(parsed.url);
-        if (parsed.format) note(`格式 ${clipText(parsed.format, 40)}`);
+        line(textOf(pick(parsed, ["url", "uri", "href"])));
+        const format = textOf(pick(parsed, ["format"]));
+        if (format) note(`格式 ${clipText(format, 40)}`);
         break;
       }
       case "task": {
-        line(parsed.description);
-        if (parsed.prompt) note(clipText(firstLine(parsed.prompt), 200));
+        line(textOf(pick(parsed, ["description", "title"])));
+        const prompt = textOf(pick(parsed, ["prompt", "message", "input"]));
+        if (prompt) note(clipText(firstLine(prompt), 200));
         break;
       }
       case "list": {
-        line(parsed.path ?? ".", "live-call-path");
+        line(textOf(pick(parsed, ["path", "directory", "dir"])) || ".", "live-call-path");
+        if (parsed.recursive) note("递归");
+        break;
+      }
+      case "apply_patch": {
+        const patch = textOf(pick(parsed, ["input", "patch", "diff"]));
+        if (patch) {
+          const files = [...patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)].map(
+            (match) => match[1],
+          );
+          if (files.length) line(files.join("、"), "live-call-path");
+          const first = patch.split(/\r?\n/).find((part) => part.trim());
+          note(clipText(first ?? "", 180));
+          note(`补丁 ${fmtInt(countLines(patch))} 行`);
+        }
         break;
       }
     }
@@ -430,7 +550,7 @@ function toolCallHtml(call) {
     parts.push(`<pre class="live-call-args">${esc(clipText(raw, 800))}</pre>`);
   }
 
-  const label = TOOL_LABELS[name];
+  const label = TOOL_LABELS[kind];
   return `<div class="live-call" data-tool="${esc(name)}">
     <div class="live-call-head">
       <span class="live-call-name">${esc(name)}</span>
