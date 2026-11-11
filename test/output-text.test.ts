@@ -95,3 +95,30 @@ test("ignores malformed SSE data", () => {
   assert.equal(extractor.push("data: nope\n\n"), "");
   assert.equal(extractor.push(": keep-alive\n\n"), "");
 });
+
+test("reports chat finish reason from the last delta block", () => {
+  const extractor = new SseOutputExtractor("chat");
+  extractor.push('data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}\n\n');
+  assert.equal(extractor.getFinishReason(), "stop");
+});
+
+test("reports completions finish reason", () => {
+  const extractor = new SseOutputExtractor("completions");
+  extractor.push('data: {"choices":[{"text":"hi","finish_reason":"length"}]}\n\n');
+  assert.equal(extractor.getFinishReason(), "length");
+});
+
+test("reports responses completion status", () => {
+  const extractor = new SseOutputExtractor("responses");
+  assert.equal(
+    extractor.push('data: {"type":"response.completed","response":{"output_text":"final"}}\n\n'),
+    "final",
+  );
+  assert.equal(extractor.getFinishReason(), "completed");
+});
+
+test("returns null finish reason when provider did not report one", () => {
+  const extractor = new SseOutputExtractor("chat");
+  extractor.push('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n');
+  assert.equal(extractor.getFinishReason(), null);
+});

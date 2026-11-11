@@ -20,6 +20,7 @@ const MAX_LOCAL = 80;
 
 const local = {
   sessions: new Map(),
+  rawCache: new Map(),
   api: "all",
   query: "",
   onlyErrors: false,
@@ -36,6 +37,7 @@ let scrollFrame = 0;
 export function mount(root) {
   rootEl = root;
   local.sessions.clear();
+  local.rawCache.clear();
   local.api = "all";
   local.query = "";
   local.onlyErrors = false;
@@ -62,6 +64,7 @@ function destroy() {
   abort = null;
   rootEl = null;
   local.sessions.clear();
+  local.rawCache.clear();
   if (scrollFrame) window.cancelAnimationFrame(scrollFrame);
   scrollFrame = 0;
 }
@@ -93,6 +96,9 @@ function connect() {
       for (const session of data.sessions) {
         if (session && typeof session.id === "number") local.sessions.set(session.id, session);
       }
+      for (const id of local.rawCache.keys()) {
+        if (!local.sessions.has(id)) local.rawCache.delete(id);
+      }
       trimLocal();
     }
     paintStatus();
@@ -117,6 +123,7 @@ function connect() {
   });
   source.addEventListener("clear", () => {
     local.sessions.clear();
+    local.rawCache.clear();
     render();
   });
   source.addEventListener("error", () => {
@@ -174,7 +181,7 @@ function paint() {
     <div class="page-head">
       <div>
         <h1 class="page-title">实时输出</h1>
-        <p class="page-sub">查看最近经过网关的模型输出，每条都标出实际承接的模型和协议。内容只保存在内存里，刷新页面或重启进程后清空。</p>
+        <p class="page-sub">查看最近经过网关的模型输出，每条都标出实际承接的模型和协议；没有可见文本时可直接展开原始响应排查。内容只保存在内存里，刷新页面或重启进程后清空。</p>
       </div>
       <div class="page-tools">
         <span class="live-state">
@@ -233,6 +240,9 @@ function render() {
   const list = rootEl.querySelector("#live-list");
   if (!list) return;
   list.innerHTML = items.length ? items.map(cardHtml).join("") : emptyHtml();
+  for (const details of list.querySelectorAll(".live-raw[open]")) {
+    loadRaw(details);
+  }
   maybeScroll();
 }
 
@@ -291,6 +301,13 @@ function cardHtml(session) {
       </header>
       ${session.error ? `<div class="live-error">${esc(session.error)}</div>` : ""}
       <pre class="live-text" data-role="text">${esc(text)}</pre>
+      ${session.rawLength > 0 && status !== "streaming"
+        ? `<details class="live-raw"${!session.text && !session.error ? " open" : ""} data-live-raw="${session.id}">
+          <summary>${!session.text ? "原始响应（无可见文本）" : "原始响应"}</summary>
+          <pre class="live-raw-text" data-role="raw">加载中…</pre>
+        </details>`
+        : ""
+      }
     </article>
   `;
 }
@@ -310,6 +327,54 @@ function emptyHtml() {
 function setText(selector, value) {
   const node = rootEl?.querySelector(selector);
   if (node) node.textContent = value;
+}
+
+function formatRaw(raw) {
+  const trimmed = String(raw ?? "").trimStart();
+  if (!trimmed) return "（提供商没有返回响应体）";
+
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      return JSON.stringify(JSON.parse(trimmed), null, 2);
+    } catch {
+      return trimmed;
+    }
+  }
+  return trimmed;
+}
+
+/** 按需取单条会话的原始响应体，并填充到 <details> 里。 */
+async function loadRaw(details) {
+  if (!details || details.dataset.loaded === "true") return;
+  const id = Number(details.dataset.liveRaw);
+  if (!Number.isInteger(id) || id <= 0) return;
+
+  const pre = details.querySelector("[data-role='raw']");
+  if (!pre) return;
+
+  const cached = local.rawCache.get(id);
+  if (cached) {
+    pre.textContent = cached;
+    details.dataset.loaded = "true";
+    return;
+  }
+
+  details.dataset.loaded = "loading";
+  try {
+    const data = await api.get(`/api/live/${id}/raw`);
+    const formatted = formatRaw(data?.raw ?? "");
+    pre.textContent = formatted;
+    local.rawCache.set(id, formatted);
+    while (local.rawCache.size > MAX_LOCAL) {
+      const oldest = local.rawCache.keys().next().value;
+      if (oldest === undefined) break;
+      local.rawCache.delete(oldest);
+    }
+    details.dataset.loaded = "true";
+  } catch (error) {
+    pre.textContent = `读取失败：${error?.message ?? error}`;
+    details.dataset.loaded = "error";
+  }
 }
 
 /* ---------- interaction ---------- */
@@ -347,6 +412,12 @@ function onScroll() {
 }
 
 function onClick(event) {
+  const summary = event.target.closest(".live-raw summary");
+  if (summary) {
+    loadRaw(summary.closest(".live-raw"));
+    return;
+  }
+
   const chip = event.target.closest("[data-live-api]");
   if (chip) {
     local.api = chip.dataset.liveApi;
@@ -376,6 +447,7 @@ async function clearAll() {
   try {
     await api.del("/api/live");
     local.sessions.clear();
+    local.rawCache.clear();
     render();
     toast("实时输出已清空", "ok");
   } catch (error) {

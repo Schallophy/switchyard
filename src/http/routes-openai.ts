@@ -155,6 +155,7 @@ function proxy(ctx: Ctx, runtime: Runtime, path: string): Promise<void> {
           .finish({
             text: extractOutputText(api, parsed),
             finishReason,
+            raw: text,
             usage,
             bytes: Buffer.byteLength(text),
             latencyMs: Math.round(performance.now() - started),

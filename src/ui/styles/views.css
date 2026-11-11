@@ -710,6 +710,37 @@
   animation: live-blink 1s steps(2, start) infinite;
 }
 
+.live-raw {
+  margin: 8px 12px 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--rule-soft);
+}
+
+.live-raw summary {
+  cursor: pointer;
+  color: var(--ink-soft);
+  font-size: 11.5px;
+}
+
+.live-raw summary:hover {
+  color: var(--ink);
+}
+
+.live-raw-text {
+  max-height: 320px;
+  margin: 8px 0 0;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid var(--rule-soft);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .live-error {
   margin: 10px 12px 0;
   padding: 8px 10px;

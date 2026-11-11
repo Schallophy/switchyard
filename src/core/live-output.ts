@@ -4,7 +4,9 @@ import { SseOutputExtractor } from "./output-text.ts";
 
 const DEFAULT_MAX_SESSIONS = 50;
 const DEFAULT_MAX_TEXT_CHARS = 32_000;
+const DEFAULT_MAX_RAW_CHARS = 128_000;
 const TRUNCATED_MARKER = "\n\n…（输出过长，已截断）";
+const RAW_TRUNCATED_MARKER = "\n\n…（原始响应过长，已截断）";
 
 export type LiveOutputStatus = "streaming" | "ok" | "error";
 
@@ -20,6 +22,8 @@ export interface LiveOutputSession {
   status: LiveOutputStatus;
   text: string;
   finishReason: string | null;
+  raw: string;
+  rawTruncated: boolean;
   usage: Usage | null;
   bytes: number;
   latencyMs: number;
@@ -27,6 +31,9 @@ export interface LiveOutputSession {
   error: string | null;
   truncated: boolean;
 }
+
+/** 对外暴露的快照：原始响应体不下发，只暴露长度与截断标记。 */
+export type LiveOutputView = Omit<LiveOutputSession, "raw"> & { rawLength: number };
 
 export interface LiveOutputStart {
   api: ApiKind;
@@ -41,6 +48,7 @@ export interface LiveOutputStart {
 export interface LiveOutputFinish {
   text?: string | null;
   finishReason?: string | null;
+  raw?: string | null;
   usage?: Usage | null;
   bytes?: number;
   latencyMs?: number;
@@ -51,12 +59,13 @@ export interface LiveOutputFinish {
 export interface LiveOutputLimits {
   sessions: number;
   textChars: number;
+  rawChars: number;
 }
 
 export type LiveOutputEvent =
-  | { type: "start"; session: LiveOutputSession }
+  | { type: "start"; session: LiveOutputView }
   | { type: "delta"; id: number; text: string }
-  | { type: "done"; session: LiveOutputSession }
+  | { type: "done"; session: LiveOutputView }
   | { type: "clear" };
 
 type Listener = (event: LiveOutputEvent) => void;
@@ -68,13 +77,15 @@ type Listener = (event: LiveOutputEvent) => void;
 export class LiveOutputLog {
   readonly #maxSessions: number;
   readonly #maxTextChars: number;
+  readonly #maxRawChars: number;
   #sessions: LiveOutputSession[] = [];
   #nextId = 1;
   #listeners = new Set<Listener>();
 
-  constructor(options: { maxSessions?: number; maxTextChars?: number } = {}) {
+  constructor(options: { maxSessions?: number; maxTextChars?: number; maxRawChars?: number } = {}) {
     this.#maxSessions = Math.max(1, options.maxSessions ?? DEFAULT_MAX_SESSIONS);
     this.#maxTextChars = Math.max(8, options.maxTextChars ?? DEFAULT_MAX_TEXT_CHARS);
+    this.#maxRawChars = Math.max(1, options.maxRawChars ?? DEFAULT_MAX_RAW_CHARS);
   }
 
   start(input: LiveOutputStart): LiveOutputHandle {
@@ -90,6 +101,8 @@ export class LiveOutputLog {
       status: "streaming",
       text: "",
       finishReason: null,
+      raw: "",
+      rawTruncated: false,
       usage: null,
       bytes: 0,
       latencyMs: 0,
@@ -104,18 +117,25 @@ export class LiveOutputLog {
     return new LiveOutputHandle(this, session);
   }
 
-  recent(limit = this.#maxSessions): LiveOutputSession[] {
+  recent(limit = this.#maxSessions): LiveOutputView[] {
     const safe = Math.max(1, Math.min(this.#maxSessions, Math.trunc(limit) || this.#maxSessions));
     return this.#sessions.slice(-safe).map(cloneSession);
   }
 
   limits(): LiveOutputLimits {
-    return { sessions: this.#maxSessions, textChars: this.#maxTextChars };
+    return { sessions: this.#maxSessions, textChars: this.#maxTextChars, rawChars: this.#maxRawChars };
   }
 
   clear(): void {
     this.#sessions = [];
     this.#emit({ type: "clear" });
+  }
+
+  /** @internal 由 LiveOutputHandle 调用。 */
+  raw(id: number): { raw: string; truncated: boolean } | null {
+    const session = this.#sessions.find((session) => session.id === id);
+    if (!session) return null;
+    return { raw: session.raw, truncated: session.rawTruncated };
   }
 
   subscribe(listener: Listener): () => void {
@@ -149,10 +169,33 @@ export class LiveOutputLog {
     }
   }
 
+  /** @internal 由 LiveOutputHandle 调用：累积未经解析的上游原始文本。 */
+  captureRaw(session: LiveOutputSession, chunk: string): void {
+    if (!chunk || session.rawTruncated) return;
+
+    const remaining = this.#maxRawChars - session.raw.length;
+    if (remaining <= 0) {
+      session.rawTruncated = true;
+      session.raw += RAW_TRUNCATED_MARKER;
+      return;
+    }
+
+    const slice = chunk.length > remaining ? chunk.slice(0, remaining) : chunk;
+    session.raw += slice;
+
+    if (slice.length < chunk.length) {
+      session.rawTruncated = true;
+      session.raw += RAW_TRUNCATED_MARKER;
+    }
+  }
+
   /** @internal 由 LiveOutputHandle 调用。 */
   complete(session: LiveOutputSession, patch: LiveOutputFinish): void {
     if (typeof patch.text === "string" && patch.text) {
       this.append(session, patch.text);
+    }
+    if (typeof patch.raw === "string" && patch.raw) {
+      this.captureRaw(session, patch.raw);
     }
 
     session.status = patch.error ? "error" : "ok";
@@ -199,9 +242,10 @@ export class LiveOutputHandle {
     this.#extractor = new SseOutputExtractor(session.api);
   }
 
-  /** 输入一段原始 SSE 文本；内部会解析成可见的增量。 */
+  /** 输入一段原始 SSE 文本；内部会解析成可见的增量，并原样缓存原始响应。 */
   push(chunk: string): void {
     if (this.#finished) return;
+    this.#log.captureRaw(this.#session, chunk);
     const text = this.#extractor.push(chunk);
     if (text) this.#log.append(this.#session, text);
   }
@@ -219,6 +263,7 @@ export class LiveOutputHandle {
     this.#log.complete(this.#session, {
       text: patch.text,
       finishReason: patch.finishReason ?? this.getFinishReason(),
+      raw: patch.raw,
       usage: patch.usage,
       bytes: patch.bytes,
       latencyMs: patch.latencyMs,
@@ -228,9 +273,11 @@ export class LiveOutputHandle {
   }
 }
 
-function cloneSession(session: LiveOutputSession): LiveOutputSession {
+function cloneSession(session: LiveOutputSession): LiveOutputView {
+  const { raw, ...rest } = session;
   return {
-    ...session,
+    ...rest,
+    rawLength: raw.length,
     usage: session.usage ? { ...session.usage } : null,
     finishReason: session.finishReason ?? null,
   };

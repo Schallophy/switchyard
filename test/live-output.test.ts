@@ -96,3 +96,51 @@ test("a finished handle ignores later chunks", () => {
   handle.push('data: {"choices":[{"delta":{"content":"late"}}]}\n\n');
   assert.equal(log.recent()[0]?.text, "");
 });
+
+test("captures the raw response body alongside the extracted text", () => {
+  const log = new LiveOutputLog();
+  const handle = log.start({
+    api: "chat",
+    model: "p/model",
+    provider: "p",
+    caller: "tester",
+    requested: "auto",
+    stream: true,
+  });
+  handle.push('data: {"choices":[{"delta":{"content":"hello"}}]}\n\n');
+  handle.finish({ finishReason: "stop" });
+
+  const session = log.recent()[0];
+  assert.equal(session?.rawLength, 'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n'.length);
+  assert.equal(session?.finishReason, "stop");
+  const raw = log.raw(session?.id ?? 0);
+  assert.ok(raw);
+  assert.equal(raw?.raw, 'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n');
+  assert.equal(raw?.truncated, false);
+});
+
+test("truncates and marks an over-long raw body", () => {
+  const log = new LiveOutputLog({ maxRawChars: 32 });
+  const handle = log.start({
+    api: "completions",
+    model: "p/one",
+    provider: "p",
+    caller: "tester",
+    requested: "auto",
+    stream: false,
+  });
+  handle.finish({ raw: "a very long raw response body that exceeds thirty-two characters" });
+
+  const session = log.recent()[0];
+  assert.equal(session?.truncated, false);
+  assert.equal(session?.rawLength, 32 + "\n\n…（原始响应过长，已截断）".length);
+  const raw = log.raw(session?.id ?? 0);
+  assert.ok(raw);
+  assert.match(raw?.raw ?? "", /已截断/);
+  assert.ok(raw?.truncated);
+});
+
+test("raw returns null for unknown session", () => {
+  const log = new LiveOutputLog();
+  assert.equal(log.raw(999), null);
+});

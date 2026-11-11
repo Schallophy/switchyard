@@ -94,6 +94,14 @@ export function registerAdminRoutes(router: Router, runtime: Runtime): void {
     ctx.send(200, { ok: true });
   });
 
+  router.add("GET", "/api/live/:id/raw", (ctx) => {
+    const id = Number(ctx.params.id);
+    if (!Number.isInteger(id) || id <= 0) throw new HttpError(400, "无效的输出编号");
+    const raw = runtime.liveOutput.raw(id);
+    if (!raw) throw new HttpError(404, "找不到该输出");
+    ctx.send(200, { raw: raw.raw, truncated: raw.truncated });
+  });
+
   router.add("GET", "/api/config", (ctx) => {
     ctx.send(200, {
       text: sanitizedConfigText(runtime),
