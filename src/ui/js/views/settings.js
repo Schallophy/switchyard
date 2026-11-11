@@ -6,6 +6,7 @@ import { confirmDialog, toast } from "../ui.js";
 const SECTIONS = [
   ["gateway", "网关"],
   ["providers", "提供商"],
+  ["pricing", "定价"],
   ["failover", "故障转移"],
   ["service", "服务"],
   ["log", "日志"],
@@ -272,6 +273,8 @@ function panelHtml() {
   switch (local.section) {
     case "providers":
       return providersPanel();
+    case "pricing":
+      return pricingPanel();
     case "failover":
       return failoverPanel();
     case "service":
@@ -412,6 +415,160 @@ function keyStatus(provider) {
   }
   if (provider.apiKey) return { ok: true, text: "Key 已填写（未保存）" };
   return { ok: false, text: "Key 未配置" };
+}
+
+function pricingPanel() {
+  const pricing = ensurePricing();
+
+  const codes = [];
+  for (const code of local.config.chain?.models || []) {
+    if (typeof code === "string" && code && !codes.includes(code)) codes.push(code);
+  }
+  for (const code of Object.keys(pricing.models)) {
+    if (!codes.includes(code)) codes.push(code);
+  }
+
+  return `
+    <section class="group">
+      <div class="group-head">
+        <h2>定价</h2>
+        <p>按模型填写单价与峰谷时段。用量页、模型页会按这里估算成本；时段使用网关进程的本地时区，必须完整覆盖一整天。</p>
+      </div>
+      <div class="fields">
+        <label class="field">
+          <span class="field-label">货币</span>
+          <input class="input mono" data-path="pricing.currency" value="${esc(
+            pricing.currency,
+          )}" placeholder="CNY" autocomplete="off">
+          <span class="field-hint">只决定成本显示的符号，不做汇率换算。</span>
+        </label>
+        <label class="field">
+          <span class="field-label">计价单位（tokens）</span>
+          <input class="input" type="number" min="1" max="1000000000" step="1000" data-path="pricing.unit" value="${
+            pricing.unit
+          }">
+          <span class="field-hint">单价的 token 基数；1000000 = 每百万 token 的价格。</span>
+        </label>
+      </div>
+      <div class="price-list">
+        ${
+          codes.length
+            ? codes.map((code) => priceModelHtml(code)).join("")
+            : `<p class="field-hint">模型列表还是空的。先到「模型」页加入模型，再回来配置单价。</p>`
+        }
+      </div>
+    </section>
+  `;
+}
+
+function priceModelHtml(code) {
+  const pricing = local.config.pricing;
+  const entry = pricing.models[code];
+
+  if (!entry) {
+    return `
+      <div class="price-model" data-price-model="${esc(code)}">
+        <div class="price-head">
+          <span class="price-code">${esc(code)}</span>
+          <span class="price-state">未定价</span>
+          <button class="btn ghost sm" type="button" data-action="price-add-model" data-code="${esc(
+            code,
+          )}">添加定价</button>
+        </div>
+      </div>`;
+  }
+
+  const tiers = entry.tiers || [];
+
+  return `
+    <div class="price-model" data-price-model="${esc(code)}">
+      <div class="price-head">
+        <span class="price-code">${esc(code)}</span>
+        <span class="price-state">每 ${pricing.unit.toLocaleString("en-US")} tokens</span>
+        <button class="btn danger sm" type="button" data-action="price-remove-model" data-code="${esc(
+          code,
+        )}">移除定价</button>
+      </div>
+      <div class="price-tiers">
+        ${tiers.map((tier, index) => priceTierHtml(tier, index)).join("")}
+      </div>
+      <div class="price-foot">
+        <button class="btn ghost sm" type="button" data-action="price-add-tier">添加时段</button>
+        <button class="btn ghost sm" type="button" data-action="price-peak">峰谷两段</button>
+        <span class="field-hint">起止相同表示全天；跨零点直接写 22:00 → 08:00。</span>
+      </div>
+    </div>`;
+}
+
+function priceTierHtml(tier, index) {
+  return `
+    <div class="price-tier" data-price-tier="${index}">
+      <label class="price-cell">
+        <span class="field-label">起</span>
+        <input class="input mono" type="time" data-tier-field="from" value="${esc(tier.from)}">
+      </label>
+      <label class="price-cell">
+        <span class="field-label">止</span>
+        <input class="input mono" type="time" data-tier-field="to" value="${esc(tier.to)}">
+      </label>
+      <label class="price-cell">
+        <span class="field-label">输入</span>
+        <input class="input" type="number" min="0" step="any" data-tier-field="input" value="${tier.input}">
+      </label>
+      <label class="price-cell">
+        <span class="field-label">缓存输入</span>
+        <input class="input" type="number" min="0" step="any" data-tier-field="cachedInput" value="${
+          tier.cachedInput
+        }">
+      </label>
+      <label class="price-cell">
+        <span class="field-label">输出</span>
+        <input class="input" type="number" min="0" step="any" data-tier-field="output" value="${tier.output}">
+      </label>
+      <div class="price-cell price-actions">
+        <button class="btn ghost sm" type="button" data-action="price-all-day" data-index="${index}">全天</button>
+        <button class="btn danger sm" type="button" data-action="price-remove-tier" data-index="${index}">删除</button>
+      </div>
+    </div>`;
+}
+
+function ensurePricing() {
+  local.config.pricing ||= { currency: "CNY", unit: 1_000_000, models: {} };
+  local.config.pricing.models ||= {};
+  local.config.pricing.currency ||= "CNY";
+  local.config.pricing.unit ||= 1_000_000;
+  return local.config.pricing;
+}
+
+function blankTier(from = "00:00", to = "00:00") {
+  return { from, to, input: 0, cachedInput: 0, output: 0 };
+}
+
+function clockToMinutes(value) {
+  const [hours, minutes] = String(value || "00:00").split(":").map(Number);
+  return (Number.isFinite(hours) ? hours : 0) * 60 + (Number.isFinite(minutes) ? minutes : 0);
+}
+
+function minutesToClock(total) {
+  const minutes = ((total % 1440) + 1440) % 1440;
+  return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+}
+
+/** 从中间切开最后一个时段，追加后仍然覆盖一整天且不重叠。 */
+function splitLastTier(tiers) {
+  const last = tiers[tiers.length - 1];
+  const prices = { input: last.input, cachedInput: last.cachedInput, output: last.output };
+  let from = clockToMinutes(last.from);
+  let to = clockToMinutes(last.to);
+  if (from === to) {
+    from = 0;
+    to = 1440;
+  }
+  const span = (to - from + 1440) % 1440 || 720;
+  const mid = (from + Math.floor(span / 2)) % 1440;
+  last.from = minutesToClock(from);
+  last.to = minutesToClock(mid);
+  tiers.push({ from: minutesToClock(mid), to: minutesToClock(to), ...prices });
 }
 
 function failoverPanel() {
@@ -630,6 +787,20 @@ function onFieldEdit(event) {
     return;
   }
 
+  const tierField = element.dataset.tierField;
+  if (tierField) {
+    const code = element.closest("[data-price-model]")?.dataset.priceModel;
+    const index = Number(element.closest("[data-price-tier]")?.dataset.priceTier);
+    const tier = code ? local.config?.pricing?.models?.[code]?.tiers?.[index] : null;
+    if (!tier) return;
+
+    tier[tierField] =
+      tierField === "from" || tierField === "to" ? element.value : Number(element.value || 0);
+    local.dirty = true;
+    refreshSavebar();
+    return;
+  }
+
   const providerPath = element.dataset.providerPath;
   if (providerPath) {
     const holder = element.closest("[data-provider-index]");
@@ -748,6 +919,44 @@ async function onClick(event) {
 
   if (action === "save") {
     save();
+    return;
+  }
+
+  if (action.startsWith("price-")) {
+    const pricing = ensurePricing();
+    const modelEl = target.closest("[data-price-model]");
+    const code = target.dataset.code || modelEl?.dataset.priceModel || "";
+    const entry = pricing.models[code];
+
+    if (action === "price-add-model") {
+      pricing.models[code] = { tiers: [blankTier()] };
+    } else if (action === "price-remove-model" && entry) {
+      delete pricing.models[code];
+    } else if (action === "price-add-tier" && entry?.tiers?.length) {
+      splitLastTier(entry.tiers);
+    } else if (action === "price-remove-tier" && entry) {
+      entry.tiers.splice(Number(target.dataset.index), 1);
+      if (entry.tiers.length === 0) delete pricing.models[code];
+    } else if (action === "price-all-day" && entry) {
+      const tier = entry.tiers[Number(target.dataset.index)];
+      if (tier) {
+        tier.from = "00:00";
+        tier.to = "00:00";
+      }
+    } else if (action === "price-peak" && entry) {
+      const base = entry.tiers[0] || blankTier();
+      const prices = { input: base.input, cachedInput: base.cachedInput, output: base.output };
+      entry.tiers = [
+        { from: "08:00", to: "22:00", ...prices },
+        { from: "22:00", to: "08:00", ...prices },
+      ];
+    } else {
+      return;
+    }
+
+    local.dirty = true;
+    paintPanel();
+    refreshSavebar();
     return;
   }
 

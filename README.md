@@ -295,9 +295,10 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
   "pricing": {
     "currency": "CNY",            // 展示币种
     "unit": 1000000,              // 单价按每百万 token
-    "models": {
+    "models": {                   // 也可以在「设置 → 定价」里编辑
       "qianwenai/deepseek-v4.1-flash-1017": {
         "tiers": [
+          // 谷时 22:00–08:00，峰时 08:00–22:00；from == to 表示全天
           { "from": "22:00", "to": "08:00", "input": 1, "cachedInput": 0.1, "output": 4 },
           { "from": "08:00", "to": "22:00", "input": 2, "cachedInput": 0.2, "output": 8 }
         ]
@@ -362,6 +363,8 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 成本 = 新增输入 × input + 缓存命中 × cachedInput + 输出 × output
 ```
 
+单价在看板「设置 → 定价」里填写：选好货币和计价单位后，每个模型都能加时段（峰谷、跨零点都支持），也可以直接用「峰谷两段」按键生成 `08:00–22:00` 与 `22:00–08:00` 两档再改数值。「起」「止」相同表示全天。也可以直接编辑 `config.json` 的 `pricing`。
+
 三项 token 都来自提供商的 `usage`，只有单价是本地配置。几个边界：
 
 - 时间段按网关进程的本地时区解释，必须完整覆盖 24 小时，否则保存配置时报错；
@@ -395,7 +398,7 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 | 模型 | 当前输出与状态、请求/切换/Token 统计、路由轨道（拖动或 `Alt+↑/↓` 调整优先级）、设为当前输出、重置状态、编辑 API 能力、批量移出、添加模型面板（按提供商展示目录、搜索/筛选/刷新与手动填写模型名）、发送测试、链路策略摘要与最近事件 |
 | 用量 | 按调用方 API Key 汇总请求、失败、切换、真实输入/输出 Token、缓存命中率与按配置单价估算的成本，可分别排序并展开明细 |
 | 事件 | 切换、失效、限流、恢复、配置变更，可按类型过滤、关键词搜索、暂停实时刷新 |
-| 设置 | 网关、提供商、故障转移、服务、日志、数据、原始 JSON 的完整表单；「数据」分组可重置用量统计；底部保存栏统一提交 |
+| 设置 | 网关、提供商、定价、故障转移、服务、日志、数据、原始 JSON 的完整表单；「定价」分组可逐模型填写单价与峰谷时段，「数据」分组可重置用量统计；底部保存栏统一提交 |
 
 旧地址会重定向到新页面：`#/overview`、`#/chain` → 模型，`#/callers` → 用量，`#/catalog` 打开「添加模型」面板。
 

@@ -742,6 +742,91 @@
   margin-top: 14px;
 }
 
+/* ---------- pricing ---------- */
+
+.price-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.price-model {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.price-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 6px 12px;
+}
+
+.price-code {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.price-state {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--ink-soft);
+  font-size: 11.5px;
+}
+
+.price-head .btn {
+  flex-shrink: 0;
+}
+
+.price-tiers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid var(--rule-soft);
+}
+
+.price-tier {
+  display: grid;
+  grid-template-columns: 96px 96px repeat(3, minmax(0, 1fr)) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.price-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.price-cell .field-label {
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.price-actions {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 5px;
+}
+
+.price-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 0 12px 12px;
+}
+
 .code-area {
   min-height: 420px;
   font-family: var(--font-mono);
@@ -1179,5 +1264,15 @@
 
   .savebar {
     flex-wrap: wrap;
+  }
+
+  /* 定价：时段改为两列，按钮独占一行 */
+  .price-tier {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .price-actions {
+    grid-column: 1 / -1;
+    padding-bottom: 0;
   }
 }
