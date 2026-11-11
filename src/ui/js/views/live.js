@@ -609,7 +609,7 @@ function cardHtml(session) {
     [session.stream ? "流式" : "非流式", ""],
     [session.failovers > 0 ? `故障转移 ${fmtInt(session.failovers)} 次` : null, "hold"],
     [session.latencyMs > 0 ? fmtMs(session.latencyMs) : null, ""],
-    [usage ? `输入 ${fmtTokens(inputTokens)}` : null, ""],
+    [usage ? `新增输入 ${fmtTokens(inputTokens)}` : null, ""],
     [usage && cachedTokens > 0 ? `缓存 ${fmtTokens(cachedTokens)}` : null, ""],
     [usage ? `输出 ${fmtTokens(usage.completionTokens)}` : null, ""],
     [session.bytes > 0 ? fmtBytes(session.bytes) : null, ""],

@@ -10,6 +10,23 @@ export interface Usage {
   cacheReported: boolean;
 }
 
+/** 一次请求的成本构成；三项相加就是该次请求的成本。 */
+export interface CostSplit {
+  /** 未命中缓存的输入成本。 */
+  input: number;
+  /** 命中缓存的输入成本。 */
+  cachedInput: number;
+  /** 输出成本。 */
+  output: number;
+  /** 缓存相对全价输入省下的金额。 */
+  cacheSaved: number;
+}
+
+export interface CostBreakdown extends CostSplit {
+  /** 历史数据按 token 比例折算，只有部分或全部为估算时为 true。 */
+  estimated: boolean;
+}
+
 export interface ModelRecord {
   code: string;
   family: string;
@@ -27,6 +44,7 @@ export interface ModelRecord {
   completionTokens: number;
   /** 按 pricing 配置估算的累计成本（配置币种）。 */
   cost: number;
+  costBreakdown: CostBreakdown;
   requests: number;
   failures: number;
   throttledUntil: string | null;

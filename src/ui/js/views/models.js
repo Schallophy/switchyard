@@ -308,8 +308,9 @@ function tokensOf(model) {
   return inputTokens(model) + (model.completionTokens || 0);
 }
 
+/** 原始输入：与 OpenAI usage.promptTokens 一致，包含缓存命中部分。 */
 function inputTokens(row) {
-  return Math.max(0, (row.promptTokens || 0) - (row.cachedPromptTokens || 0));
+  return Math.max(0, Number(row.promptTokens) || 0);
 }
 
 function cacheRate(row) {
@@ -841,7 +842,7 @@ function openDetail(code, ctx) {
     ["请求 / 失败", `${fmtInt(model.requests)} / ${fmtInt(model.failures)}`],
     [
       "Tokens",
-      `${fmtTokens(tokensOf(model))}（输入 ${fmtTokens(inputTokens(model))} · 输出 ${fmtTokens(
+      `${fmtTokens(tokensOf(model))}（原始输入 ${fmtTokens(inputTokens(model))} · 输出 ${fmtTokens(
         model.completionTokens,
       )}）`,
     ],
@@ -1218,10 +1219,14 @@ function testResultHtml(test) {
   const result = test.result;
   const cache =
     result.usage?.cacheReported && result.usage.promptTokens > 0
-      ? ` · 缓存 ${fmtPercent(result.usage.cachedPromptTokens / result.usage.promptTokens)}`
+      ? ` · 缓存 ${fmtTokens(result.usage.cachedPromptTokens)}（${fmtPercent(
+          result.usage.cachedPromptTokens / result.usage.promptTokens,
+        )}）`
       : "";
   const usage = result.usage
-    ? `${fmtInt(inputTokens(result.usage))} 输入 / ${fmtInt(result.usage.completionTokens)} 输出${cache}`
+    ? `${fmtInt(result.usage.promptTokens)} 原始输入 / ${fmtInt(
+        result.usage.completionTokens,
+      )} 输出${cache}`
     : "未返回用量";
 
   return `

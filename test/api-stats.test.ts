@@ -60,6 +60,29 @@ test("usage is counted per protocol and per caller", async () => {
   }
 });
 
+test("protocol stats keep the cost split alongside the total", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "switchyard-api-stats-"));
+  try {
+    const file = join(dir, "state.json");
+    const store = await StateStore.open({ file, codes: ["model-a"] });
+    const parts = { input: 0.4, cachedInput: 0.2, output: 0.6, cacheSaved: 0.8 };
+
+    store.markUsed("model-a", cached, 1.2, "responses", parts);
+    await store.flush();
+
+    const reopened = await StateStore.open({ file, codes: ["model-a"] });
+    assert.equal(reopened.stats.apis.responses.cost, 1.2);
+    assert.deepEqual(reopened.stats.apis.responses.costBreakdown, {
+      ...parts,
+      estimated: false,
+    });
+    assert.deepEqual(reopened.stats.costBreakdown, { ...parts, estimated: false });
+    assert.equal(reopened.get("model-a")?.costBreakdown.cachedInput, 0.2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("state files without protocol stats hydrate to empty counters", async () => {
   const dir = await mkdtemp(join(tmpdir(), "switchyard-api-stats-"));
   try {

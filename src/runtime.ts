@@ -7,7 +7,7 @@ import { joinModelCode, splitModelCode } from "./core/model-code.ts";
 import { EventLog } from "./core/events.ts";
 import { LiveOutputLog } from "./core/live-output.ts";
 import { runFailover, type FailoverHooks, type FailoverResult } from "./core/failover.ts";
-import { priceTierAt, usageCost } from "./core/pricing.ts";
+import { priceTierAt, usageCostParts } from "./core/pricing.ts";
 import {
   ResponseChainStore,
   captureResponseId,
@@ -152,6 +152,14 @@ export class Runtime {
     if (aliases.size > 0) store.migrateModelCodes((code) => aliases.get(code) ?? null);
     // 模型只能由用户加入；目录里的候选模型不落盘
     store.pruneModels(options.config.chain.models);
+
+    const at = new Date();
+    const filled = store.backfillUsageDetails((model, usage) => {
+      if (!model) return null;
+      const tier = priceTierAt(options.config.pricing, model, at);
+      return tier ? usageCostParts(usage, tier, options.config.pricing.unit) : null;
+    });
+    if (filled) options.logger.info("已补齐历史用量的成本拆分与模型明细");
     return runtime;
   }
 
@@ -257,6 +265,7 @@ export class Runtime {
       cacheTrackedPromptTokens: 0,
       completionTokens: 0,
       cost: 0,
+      costBreakdown: { input: 0, cachedInput: 0, output: 0, cacheSaved: 0, estimated: false },
       requests: 0,
       failures: 0,
       throttledUntil: null,
@@ -603,7 +612,10 @@ export class Runtime {
       api,
     });
     for (const attempt of result.attempts) {
-      if (!attempt.ok) this.store.markFailure(attempt.model);
+      if (!attempt.ok) {
+        this.store.markFailure(attempt.model);
+        this.store.markCallerModelFailure(caller, attempt.model, api);
+      }
     }
 
     if (result.ok) {
@@ -647,9 +659,10 @@ export class Runtime {
     api: ApiKind = "chat",
   ): void {
     const tier = usage ? priceTierAt(this.config.pricing, model, new Date()) : null;
-    const cost = usage && tier ? usageCost(usage, tier, this.config.pricing.unit) : 0;
-    this.store.markUsed(model, usage, cost, api);
-    this.store.addCallerUsage(caller, usage, model, cost, api);
+    const parts = usage && tier ? usageCostParts(usage, tier, this.config.pricing.unit) : null;
+    const cost = parts ? parts.input + parts.cachedInput + parts.output : 0;
+    this.store.markUsed(model, usage, cost, api, parts ?? undefined);
+    this.store.addCallerUsage(caller, usage, model, cost, api, parts ?? undefined);
     if (usage && sample) {
       this.store.observeCalibration(model, sample.hasTools, sample.estimatedPromptTokens, usage.promptTokens);
     }
@@ -845,9 +858,8 @@ export class Runtime {
   /** 用指定时刻命中的价格档重算已有 token 的成本（历史数据没有逐请求时间）。 */
   backfillCosts(at: Date): void {
     this.store.recomputeCosts((model, usage) => {
-      if (!model) return 0;
-      const tier = priceTierAt(this.config.pricing, model, at);
-      return tier ? usageCost(usage, tier, this.config.pricing.unit) : 0;
+      const tier = model ? priceTierAt(this.config.pricing, model, at) : null;
+      return tier ? usageCostParts(usage, tier, this.config.pricing.unit) : { input: 0, cachedInput: 0, output: 0, cacheSaved: 0 };
     });
     this.events.push({
       kind: "config",

@@ -387,12 +387,22 @@ function buildOverview(runtime: Runtime): Record<string, unknown> {
     log: runtime.config.log,
     stats: runtime.store.stats,
     chaining: runtime.chainStats(),
-    callers: [...runtime.store.callers()].sort(
-      (a, b) =>
-        b.promptTokens + b.completionTokens - (a.promptTokens + a.completionTokens) ||
-        b.requests - a.requests ||
-        a.label.localeCompare(b.label),
-    ),
+    callers: [...runtime.store.callers()]
+      .sort(
+        (a, b) =>
+          b.promptTokens + b.completionTokens - (a.promptTokens + a.completionTokens) ||
+          b.requests - a.requests ||
+          a.label.localeCompare(b.label),
+      )
+      .map((caller) => ({
+        ...caller,
+        models: Object.values(caller.models).sort(
+          (a, b) =>
+            b.cost - a.cost ||
+            b.requests - a.requests ||
+            (a.model ?? "").localeCompare(b.model ?? ""),
+        ),
+      })),
     chain: runtime.chainSnapshot(),
     output: runtime.lastOutput(),
     activeModel: runtime.primaryModel(),

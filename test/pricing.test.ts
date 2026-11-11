@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { PricingConfig } from "../src/config/schema.ts";
-import { priceTierAt, usageCost } from "../src/core/pricing.ts";
+import { priceTierAt, usageCost, usageCostParts } from "../src/core/pricing.ts";
 import type { Usage } from "../src/types.ts";
 
 const pricing: PricingConfig = {
@@ -83,4 +83,41 @@ test("cost ignores impossible cache counts", () => {
   };
   const tier = { from: "00:00", to: "00:00", input: 2, cachedInput: 1, output: 8 };
   assert.equal(usageCost(usage, tier, 1_000_000), (100 * 1) / 1_000_000);
+});
+
+test("cost parts split input, cache hits, output and savings", () => {
+  const usage: Usage = {
+    promptTokens: 1_000,
+    completionTokens: 100,
+    totalTokens: 1_100,
+    cachedPromptTokens: 800,
+    cacheReported: true,
+  };
+  const tier = { from: "00:00", to: "00:00", input: 2, cachedInput: 0.2, output: 8 };
+  const parts = usageCostParts(usage, tier, 1_000_000);
+
+  assert.equal(parts.input, (200 * 2) / 1_000_000);
+  assert.equal(parts.cachedInput, (800 * 0.2) / 1_000_000);
+  assert.equal(parts.output, (100 * 8) / 1_000_000);
+  assert.equal(parts.cacheSaved, (800 * 1.8) / 1_000_000);
+  assert.equal(parts.input + parts.cachedInput + parts.output, usageCost(usage, tier, 1_000_000));
+});
+
+test("cost parts clamp cache counts and reject a non-positive unit", () => {
+  const tier = { from: "00:00", to: "00:00", input: 2, cachedInput: 1, output: 8 };
+  const clamped = usageCostParts(
+    { promptTokens: 100, cachedPromptTokens: 500, completionTokens: 0 },
+    tier,
+    1_000_000,
+  );
+  assert.equal(clamped.input, 0);
+  assert.equal(clamped.cachedInput, (100 * 1) / 1_000_000);
+  assert.equal(clamped.cacheSaved, (100 * 1) / 1_000_000);
+
+  const invalid = usageCostParts(
+    { promptTokens: 100, cachedPromptTokens: 50, completionTokens: 10 },
+    tier,
+    0,
+  );
+  assert.deepEqual(invalid, { input: 0, cachedInput: 0, output: 0, cacheSaved: 0 });
 });

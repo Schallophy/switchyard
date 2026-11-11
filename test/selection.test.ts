@@ -28,6 +28,7 @@ function record(code: string, patch: Partial<ModelRecord> = {}): ModelRecord {
     cacheTrackedPromptTokens: 0,
     completionTokens: 0,
     cost: 0,
+    costBreakdown: { input: 0, cachedInput: 0, output: 0, cacheSaved: 0, estimated: false },
     requests: 0,
     failures: 0,
     throttledUntil: null,

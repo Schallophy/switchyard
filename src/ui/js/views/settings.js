@@ -772,7 +772,7 @@ function dataPanel() {
       <div class="fields">
         <div class="field wide">
           <span class="field-label">重置用量</span>
-          <span class="field-hint">会清零用量页与模型页的累计计数（含缓存命中数），并删除调用方记录；模型健康状态、目录、事件和配置都会保留。历史数据没有缓存明细，无法回算真实输入，重置后新请求按真实新增输入统计。此操作不可撤销。</span>
+          <span class="field-hint">会清零用量页与模型页的累计计数（含缓存命中数），并删除调用方记录；模型健康状态、目录、事件和配置都会保留。历史请求若未上报缓存明细，无法拆分新增输入与缓存命中；重置后新请求会重新完整统计。此操作不可撤销。</span>
           <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
             <button class="btn danger" type="button" data-action="reset-usage">重置用量统计</button>
             ${dataDir ? `<span class="field-hint">数据目录：${esc(dataDir)}</span>` : ""}

@@ -2,8 +2,13 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { ApiKind } from "../config/schema.ts";
 import type { CallerIdentity } from "../core/caller.ts";
-import type { ModelRecord, Usage } from "../types.ts";
+import type { CostBreakdown, CostSplit, ModelRecord, Usage } from "../types.ts";
 import { familyOf } from "../util/model.ts";
+
+/** 升级前的历史用量无法反推模型归属，统一放在这个 bucket 里。 */
+export const LEGACY_CALLER_MODEL = "__legacy__";
+
+type CostUsage = { promptTokens: number; cachedPromptTokens: number; completionTokens: number };
 
 export interface CatalogEntry {
   /** `提供商/模型名`，与 chain.models 使用同一套标识。 */
@@ -22,6 +27,7 @@ export interface ApiStat {
   cacheTrackedPromptTokens: number;
   completionTokens: number;
   cost: number;
+  costBreakdown: CostBreakdown;
   lastModel: string | null;
   lastUsedAt: string | null;
 }
@@ -37,8 +43,30 @@ export interface Stats {
   cacheTrackedPromptTokens: number;
   completionTokens: number;
   cost: number;
+  costBreakdown: CostBreakdown;
   /** 按协议（chat / completions / responses / embeddings）拆分。 */
   apis: ApiStats;
+}
+
+/** 某个调用方在某个模型上的累计用量。 */
+export interface CallerModelStat {
+  /** 模型 code；升级前的汇总行是 null。 */
+  model: string | null;
+  /** 在该模型上发生的尝试次数，含成功与失败。 */
+  attempts: number;
+  /** 成功承接并返回响应的请求数。 */
+  requests: number;
+  /** 在该模型上失败的尝试次数。 */
+  failures: number;
+  promptTokens: number;
+  cachedPromptTokens: number;
+  cacheTrackedPromptTokens: number;
+  completionTokens: number;
+  cost: number;
+  costBreakdown: CostBreakdown;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  lastApi: ApiKind | null;
 }
 
 export interface CallerRecord {
@@ -52,11 +80,14 @@ export interface CallerRecord {
   cacheTrackedPromptTokens: number;
   completionTokens: number;
   cost: number;
+  costBreakdown: CostBreakdown;
   firstSeenAt: string;
   lastSeenAt: string;
   lastModel: string | null;
   /** 最近一次请求走的协议。 */
   lastApi: ApiKind | null;
+  /** 按模型拆分的用量；`LEGACY_CALLER_MODEL` 保存升级前的汇总。 */
+  models: Record<string, CallerModelStat>;
 }
 
 export interface CalibrationBucket {
@@ -88,6 +119,61 @@ export interface StateOpenOptions {
   onError?: (error: unknown) => void;
 }
 
+function zeroSplit(): CostSplit {
+  return { input: 0, cachedInput: 0, output: 0, cacheSaved: 0 };
+}
+
+function zeroBreakdown(estimated = false): CostBreakdown {
+  return { ...zeroSplit(), estimated };
+}
+
+function addSplit(base: CostBreakdown, parts: CostSplit, estimated = false): CostBreakdown {
+  return {
+    input: base.input + parts.input,
+    cachedInput: base.cachedInput + parts.cachedInput,
+    output: base.output + parts.output,
+    cacheSaved: base.cacheSaved + parts.cacheSaved,
+    estimated: base.estimated || estimated,
+  };
+}
+
+function splitTotal(parts: CostSplit): number {
+  return parts.input + parts.cachedInput + parts.output;
+}
+
+/** 没有拆分数据时只保住总额，标记为估算。 */
+function fallbackSplit(cost: number): CostSplit {
+  return cost > 0 ? { input: cost, cachedInput: 0, output: 0, cacheSaved: 0 } : zeroSplit();
+}
+
+function sumBreakdowns(parts: CostBreakdown[]): CostBreakdown {
+  const out = zeroBreakdown();
+  for (const part of parts) {
+    out.input += part.input;
+    out.cachedInput += part.cachedInput;
+    out.output += part.output;
+    out.cacheSaved += part.cacheSaved;
+    out.estimated = out.estimated || Boolean(part.estimated);
+  }
+  return out;
+}
+
+/** 历史数据只保留了总成本，按 token 比例估出三项后缩放到原金额。 */
+function scaleSplit(parts: CostSplit | null, targetCost: number): CostBreakdown {
+  if (!(targetCost > 0)) return zeroBreakdown(true);
+  if (!parts) return { ...fallbackSplit(targetCost), estimated: true };
+  const raw = splitTotal(parts);
+  if (!(raw > 0)) return { ...fallbackSplit(targetCost), estimated: true };
+  const factor = targetCost / raw;
+  return {
+    input: parts.input * factor,
+    cachedInput: parts.cachedInput * factor,
+    output: parts.output * factor,
+    cacheSaved: parts.cacheSaved * factor,
+    estimated: true,
+  };
+}
+
 function blankRecord(code: string): ModelRecord {
   return {
     code,
@@ -104,6 +190,7 @@ function blankRecord(code: string): ModelRecord {
     cacheTrackedPromptTokens: 0,
     completionTokens: 0,
     cost: 0,
+    costBreakdown: zeroBreakdown(),
     requests: 0,
     failures: 0,
     throttledUntil: null,
@@ -118,8 +205,27 @@ function blankApiStat(): ApiStat {
     cacheTrackedPromptTokens: 0,
     completionTokens: 0,
     cost: 0,
+    costBreakdown: zeroBreakdown(),
     lastModel: null,
     lastUsedAt: null,
+  };
+}
+
+function blankCallerModel(model: string | null, at: string): CallerModelStat {
+  return {
+    model,
+    attempts: 0,
+    requests: 0,
+    failures: 0,
+    promptTokens: 0,
+    cachedPromptTokens: 0,
+    cacheTrackedPromptTokens: 0,
+    completionTokens: 0,
+    cost: 0,
+    costBreakdown: zeroBreakdown(),
+    firstSeenAt: at,
+    lastSeenAt: at,
+    lastApi: null,
   };
 }
 
@@ -144,16 +250,18 @@ function blankCaller(caller: CallerIdentity, at: string): CallerRecord {
     cacheTrackedPromptTokens: 0,
     completionTokens: 0,
     cost: 0,
+    costBreakdown: zeroBreakdown(),
     firstSeenAt: at,
     lastSeenAt: at,
     lastModel: null,
     lastApi: null,
+    models: {},
   };
 }
 
 function blankState(): PersistedState {
   return {
-    version: 1,
+    version: 2,
     models: {},
     callers: {},
     calibration: {},
@@ -167,6 +275,7 @@ function blankState(): PersistedState {
       cacheTrackedPromptTokens: 0,
       completionTokens: 0,
       cost: 0,
+      costBreakdown: zeroBreakdown(),
       apis: blankApis(),
     },
   };
@@ -268,10 +377,12 @@ export class StateStore {
     this.saveSoon();
   }
 
-  markUsed(code: string, usage: Usage | null, cost = 0, api: ApiKind = "chat"): void {
+  markUsed(code: string, usage: Usage | null, cost = 0, api: ApiKind = "chat", parts?: CostSplit): void {
     const record = this.#data.models[code];
     const cached = usage?.cachedPromptTokens ?? 0;
     const tracked = usage?.cacheReported ? usage.promptTokens : 0;
+    const split = parts ?? fallbackSplit(cost);
+    const estimated = !parts && cost > 0;
     const now = new Date().toISOString();
     // 只有用户加入列表的模型才有记录；透传模型只计入全局与调用方统计
     if (record) {
@@ -291,6 +402,7 @@ export class StateStore {
         cacheTrackedPromptTokens: record.cacheTrackedPromptTokens + tracked,
         completionTokens: record.completionTokens + (usage?.completionTokens ?? 0),
         cost: record.cost + cost,
+        costBreakdown: addSplit(record.costBreakdown ?? zeroBreakdown(), split, estimated),
       };
     }
     if (usage) {
@@ -299,6 +411,7 @@ export class StateStore {
       this.#data.stats.cacheTrackedPromptTokens += tracked;
       this.#data.stats.completionTokens += usage.completionTokens;
       this.#data.stats.cost += cost;
+      this.#data.stats.costBreakdown = addSplit(this.#data.stats.costBreakdown, split, estimated);
 
       const stat = this.#data.stats.apis[api];
       stat.promptTokens += usage.promptTokens;
@@ -306,6 +419,7 @@ export class StateStore {
       stat.cacheTrackedPromptTokens += tracked;
       stat.completionTokens += usage.completionTokens;
       stat.cost += cost;
+      stat.costBreakdown = addSplit(stat.costBreakdown, split, estimated);
     }
     const stat = this.#data.stats.apis[api];
     stat.lastModel = code;
@@ -320,9 +434,11 @@ export class StateStore {
     this.saveSoon();
   }
 
-  addUsage(code: string, usage: Usage, cost = 0, api: ApiKind = "chat"): void {
+  addUsage(code: string, usage: Usage, cost = 0, api: ApiKind = "chat", parts?: CostSplit): void {
     const record = this.#data.models[code];
     const tracked = usage.cacheReported ? usage.promptTokens : 0;
+    const split = parts ?? fallbackSplit(cost);
+    const estimated = !parts && cost > 0;
     const now = new Date().toISOString();
     if (record) {
       this.#data.models[code] = {
@@ -333,6 +449,7 @@ export class StateStore {
         cacheTrackedPromptTokens: record.cacheTrackedPromptTokens + tracked,
         completionTokens: record.completionTokens + usage.completionTokens,
         cost: record.cost + cost,
+        costBreakdown: addSplit(record.costBreakdown ?? zeroBreakdown(), split, estimated),
       };
     }
     this.#data.stats.promptTokens += usage.promptTokens;
@@ -340,6 +457,7 @@ export class StateStore {
     this.#data.stats.cacheTrackedPromptTokens += tracked;
     this.#data.stats.completionTokens += usage.completionTokens;
     this.#data.stats.cost += cost;
+    this.#data.stats.costBreakdown = addSplit(this.#data.stats.costBreakdown, split, estimated);
 
     const stat = this.#data.stats.apis[api];
     stat.promptTokens += usage.promptTokens;
@@ -347,6 +465,7 @@ export class StateStore {
     stat.cacheTrackedPromptTokens += tracked;
     stat.completionTokens += usage.completionTokens;
     stat.cost += cost;
+    stat.costBreakdown = addSplit(stat.costBreakdown, split, estimated);
     stat.lastModel = code;
     stat.lastUsedAt = now;
     this.saveSoon();
@@ -371,11 +490,21 @@ export class StateStore {
     this.saveSoon();
   }
 
-  addCallerUsage(caller: CallerIdentity, usage: Usage | null, model: string, cost = 0, api: ApiKind = "chat"): void {
+  addCallerUsage(
+    caller: CallerIdentity,
+    usage: Usage | null,
+    model: string,
+    cost = 0,
+    api: ApiKind = "chat",
+    parts?: CostSplit,
+  ): void {
     const now = new Date().toISOString();
     const record = this.#data.callers[caller.id] ?? blankCaller(caller, now);
     const cached = usage?.cachedPromptTokens ?? 0;
     const tracked = usage?.cacheReported ? usage.promptTokens : 0;
+    const split = parts ?? fallbackSplit(cost);
+    const estimated = !parts && cost > 0;
+    const bucket = record.models[model] ?? blankCallerModel(model, now);
     this.#data.callers[caller.id] = {
       ...record,
       label: caller.label,
@@ -384,9 +513,48 @@ export class StateStore {
       cacheTrackedPromptTokens: record.cacheTrackedPromptTokens + tracked,
       completionTokens: record.completionTokens + (usage?.completionTokens ?? 0),
       cost: record.cost + cost,
+      costBreakdown: addSplit(record.costBreakdown, split, estimated),
       lastSeenAt: now,
       lastModel: model,
       lastApi: api,
+      models: {
+        ...record.models,
+        [model]: {
+          ...bucket,
+          attempts: bucket.attempts + 1,
+          requests: bucket.requests + 1,
+          promptTokens: bucket.promptTokens + (usage?.promptTokens ?? 0),
+          cachedPromptTokens: bucket.cachedPromptTokens + cached,
+          cacheTrackedPromptTokens: bucket.cacheTrackedPromptTokens + tracked,
+          completionTokens: bucket.completionTokens + (usage?.completionTokens ?? 0),
+          cost: bucket.cost + cost,
+          costBreakdown: addSplit(bucket.costBreakdown, split, estimated),
+          lastSeenAt: now,
+          lastApi: api,
+        },
+      },
+    };
+    this.saveSoon();
+  }
+
+  /** 调用方在某个模型上的失败尝试；用于明细里的「失败」列。 */
+  markCallerModelFailure(caller: CallerIdentity, model: string, api: ApiKind = "chat"): void {
+    const now = new Date().toISOString();
+    const record = this.#data.callers[caller.id] ?? blankCaller(caller, now);
+    const bucket = record.models[model] ?? blankCallerModel(model, now);
+    this.#data.callers[caller.id] = {
+      ...record,
+      label: caller.label,
+      models: {
+        ...record.models,
+        [model]: {
+          ...bucket,
+          attempts: bucket.attempts + 1,
+          failures: bucket.failures + 1,
+          lastSeenAt: now,
+          lastApi: api,
+        },
+      },
     };
     this.saveSoon();
   }
@@ -431,7 +599,7 @@ export class StateStore {
       if (!target || target === code) continue;
       const existing = this.#data.models[target];
       if (!existing) {
-        this.#data.models[target] = { ...record, code: target };
+        this.#data.models[target] = { ...record, code: target, costBreakdown: record.costBreakdown ?? zeroBreakdown() };
       } else {
         const keep = newest(existing.checkedAt, record.checkedAt) === record.checkedAt ? record : existing;
         this.#data.models[target] = {
@@ -451,6 +619,10 @@ export class StateStore {
           cacheTrackedPromptTokens: existing.cacheTrackedPromptTokens + record.cacheTrackedPromptTokens,
           completionTokens: existing.completionTokens + record.completionTokens,
           cost: existing.cost + record.cost,
+          costBreakdown: sumBreakdowns([
+            existing.costBreakdown ?? zeroBreakdown(),
+            record.costBreakdown ?? zeroBreakdown(),
+          ]),
         };
       }
       delete this.#data.models[code];
@@ -470,6 +642,37 @@ export class StateStore {
     }
     for (const caller of Object.values(this.#data.callers)) {
       if (caller.lastModel) caller.lastModel = resolve(caller.lastModel) ?? caller.lastModel;
+      for (const [key, bucket] of Object.entries(caller.models)) {
+        if (key === LEGACY_CALLER_MODEL) continue;
+        const target = resolve(key);
+        if (!target || target === key) continue;
+        const existing = caller.models[target];
+        caller.models[target] = existing
+          ? {
+              ...existing,
+              model: target,
+              attempts: existing.attempts + bucket.attempts,
+              requests: existing.requests + bucket.requests,
+              failures: existing.failures + bucket.failures,
+              promptTokens: existing.promptTokens + bucket.promptTokens,
+              cachedPromptTokens: existing.cachedPromptTokens + bucket.cachedPromptTokens,
+              cacheTrackedPromptTokens: existing.cacheTrackedPromptTokens + bucket.cacheTrackedPromptTokens,
+              completionTokens: existing.completionTokens + bucket.completionTokens,
+              cost: existing.cost + bucket.cost,
+              costBreakdown: sumBreakdowns([existing.costBreakdown, bucket.costBreakdown]),
+              firstSeenAt:
+                Date.parse(existing.firstSeenAt) <= Date.parse(bucket.firstSeenAt)
+                  ? existing.firstSeenAt
+                  : bucket.firstSeenAt,
+              lastSeenAt:
+                Date.parse(existing.lastSeenAt) >= Date.parse(bucket.lastSeenAt)
+                  ? existing.lastSeenAt
+                  : bucket.lastSeenAt,
+            }
+          : { ...bucket, model: target };
+        delete caller.models[key];
+        changed = true;
+      }
     }
 
     if (changed) this.saveSoon();
@@ -485,28 +688,219 @@ export class StateStore {
   }
 
   /**
-   * 用给定单价重算已累计 token 的成本。调用方没有按模型拆分用量，
-   * 因此调用方成本按它最近使用的模型计价（单一模型或同价模型时准确）。
+   * 用给定单价重算已累计 token 的成本。调用方按模型明细逐项重算；
+   * 没有明细时退回最近使用的模型（单一模型或同价模型时准确）。
    */
-  recomputeCosts(
-    costFor: (
-      model: string | null,
-      usage: { promptTokens: number; cachedPromptTokens: number; completionTokens: number },
-    ) => number,
-  ): void {
-    let total = 0;
+  recomputeCosts(costFor: (model: string | null, usage: CostUsage) => CostSplit): void {
+    let modelTotal = 0;
+    const modelParts: CostBreakdown[] = [];
     for (const record of Object.values(this.#data.models)) {
-      record.cost = costFor(record.code, record);
-      total += record.cost;
+      const split = costFor(record.code, record);
+      record.cost = splitTotal(split);
+      record.costBreakdown = { ...split, estimated: true };
+      modelTotal += record.cost;
+      modelParts.push(record.costBreakdown);
     }
+
     for (const caller of Object.values(this.#data.callers)) {
-      caller.cost = costFor(caller.lastModel, caller);
+      const buckets = Object.values(caller.models);
+      if (buckets.length === 0) {
+        const split = costFor(caller.lastModel, caller);
+        caller.cost = splitTotal(split);
+        caller.costBreakdown = { ...split, estimated: true };
+        continue;
+      }
+      let callerTotal = 0;
+      const callerParts: CostBreakdown[] = [];
+      for (const bucket of buckets) {
+        const split = costFor(bucket.model ?? caller.lastModel, bucket);
+        bucket.cost = splitTotal(split);
+        bucket.costBreakdown = { ...split, estimated: true };
+        callerTotal += bucket.cost;
+        callerParts.push(bucket.costBreakdown);
+      }
+      caller.cost = callerTotal;
+      caller.costBreakdown = sumBreakdowns(callerParts);
     }
+
     for (const stat of Object.values(this.#data.stats.apis)) {
-      stat.cost = costFor(stat.lastModel, stat);
+      const split = costFor(stat.lastModel, stat);
+      stat.cost = splitTotal(split);
+      stat.costBreakdown = { ...split, estimated: true };
     }
-    this.#data.stats.cost = total;
+
+    const callers = Object.values(this.#data.callers);
+    if (callers.length > 0) {
+      this.#data.stats.cost = callers.reduce((sum, caller) => sum + caller.cost, 0);
+      this.#data.stats.costBreakdown = sumBreakdowns(callers.map((caller) => caller.costBreakdown));
+    } else {
+      this.#data.stats.cost = modelTotal;
+      this.#data.stats.costBreakdown = sumBreakdowns(modelParts);
+    }
     this.saveSoon();
+  }
+
+  /**
+   * 补齐升级前没有成本拆分、也没有调用方 × 模型明细的历史数据。
+   * 拆分按 token 比例估算后缩放到已记录成本；调用方只有在唯一一个时
+   * 才用顶层模型记录反推明细，其余情况统一放进 legacy bucket。
+   */
+  backfillUsageDetails(estimate: (model: string | null, usage: CostUsage) => CostSplit | null): boolean {
+    let changed = false;
+
+    for (const record of Object.values(this.#data.models)) {
+      if (this.fillBreakdown(record, record.cost, () => estimate(record.code, record))) changed = true;
+    }
+
+    const callers = Object.values(this.#data.callers);
+    const soleCaller = callers.length === 1 ? callers[0]! : null;
+    for (const caller of callers) {
+      if (
+        Object.keys(caller.models).length === 0 &&
+        (caller.promptTokens > 0 || caller.completionTokens > 0 || caller.cost > 0)
+      ) {
+        this.seedCallerModels(caller, soleCaller === caller ? Object.values(this.#data.models) : null);
+        changed = true;
+      }
+      for (const bucket of Object.values(caller.models)) {
+        const model = bucket.model ?? caller.lastModel;
+        if (this.fillBreakdown(bucket, bucket.cost, () => (model ? estimate(model, bucket) : null))) {
+          changed = true;
+        }
+      }
+      if (splitTotal(caller.costBreakdown) <= 0 && caller.cost > 0) {
+        const fromModels = sumBreakdowns(Object.values(caller.models).map((bucket) => bucket.costBreakdown));
+        if (Math.abs(splitTotal(fromModels) - caller.cost) <= 1e-6 && splitTotal(fromModels) > 0) {
+          caller.costBreakdown = fromModels;
+        } else {
+          caller.costBreakdown = scaleSplit(estimate(caller.lastModel, caller), caller.cost);
+        }
+        changed = true;
+      }
+    }
+
+    for (const stat of Object.values(this.#data.stats.apis)) {
+      if (this.fillBreakdown(stat, stat.cost, () => estimate(stat.lastModel, stat))) changed = true;
+    }
+    if (splitTotal(this.#data.stats.costBreakdown) <= 0 && this.#data.stats.cost > 0) {
+      const fromCallers = sumBreakdowns(callers.map((caller) => caller.costBreakdown));
+      if (Math.abs(splitTotal(fromCallers) - this.#data.stats.cost) <= 1e-6 && splitTotal(fromCallers) > 0) {
+        this.#data.stats.costBreakdown = fromCallers;
+      } else {
+        const model = this.latestModel();
+        this.#data.stats.costBreakdown = scaleSplit(model ? estimate(model, this.#data.stats) : null, this.#data.stats.cost);
+      }
+      changed = true;
+    }
+
+    if (changed) this.saveSoon();
+    return changed;
+  }
+
+  private fillBreakdown<T extends { cost: number; costBreakdown: CostBreakdown }>(
+    record: T,
+    targetCost: number,
+    estimate: () => CostSplit | null,
+  ): boolean {
+    if (splitTotal(record.costBreakdown) > 0 || !(targetCost > 0)) return false;
+    record.costBreakdown = scaleSplit(estimate(), targetCost);
+    return true;
+  }
+
+  private seedCallerModels(caller: CallerRecord, models: ModelRecord[] | null): void {
+    const usable = (models ?? []).filter(
+      (model) => model.promptTokens > 0 || model.completionTokens > 0 || model.cost > 0,
+    );
+    if (usable.length > 0) {
+      const totals = usable.reduce(
+        (sum, model) => ({
+          prompt: sum.prompt + model.promptTokens,
+          cached: sum.cached + model.cachedPromptTokens,
+          tracked: sum.tracked + model.cacheTrackedPromptTokens,
+          completion: sum.completion + model.completionTokens,
+          cost: sum.cost + model.cost,
+        }),
+        { prompt: 0, cached: 0, tracked: 0, completion: 0, cost: 0 },
+      );
+      const fits =
+        totals.prompt <= caller.promptTokens + 1e-6 &&
+        totals.cached <= caller.cachedPromptTokens + 1e-6 &&
+        totals.tracked <= caller.cacheTrackedPromptTokens + 1e-6 &&
+        totals.completion <= caller.completionTokens + 1e-6 &&
+        totals.cost <= caller.cost + 1e-6;
+      if (fits) {
+        for (const model of usable) {
+          caller.models[model.code] = {
+            model: model.code,
+            attempts: model.requests + model.failures,
+            requests: model.requests,
+            failures: model.failures,
+            promptTokens: model.promptTokens,
+            cachedPromptTokens: model.cachedPromptTokens,
+            cacheTrackedPromptTokens: model.cacheTrackedPromptTokens,
+            completionTokens: model.completionTokens,
+            cost: model.cost,
+            costBreakdown: { ...model.costBreakdown },
+            firstSeenAt: model.lastUsedAt ?? caller.firstSeenAt,
+            lastSeenAt: model.lastUsedAt ?? caller.lastSeenAt,
+            lastApi: caller.lastApi,
+          };
+        }
+        const prompt = Math.max(0, caller.promptTokens - totals.prompt);
+        const cached = Math.max(0, caller.cachedPromptTokens - totals.cached);
+        const tracked = Math.max(0, caller.cacheTrackedPromptTokens - totals.tracked);
+        const completion = Math.max(0, caller.completionTokens - totals.completion);
+        const cost = Math.max(0, caller.cost - totals.cost);
+        if (prompt > 0 || completion > 0 || cost > 1e-9) {
+          caller.models[LEGACY_CALLER_MODEL] = {
+            model: null,
+            attempts: caller.requests,
+            requests: caller.requests,
+            failures: caller.failures,
+            promptTokens: prompt,
+            cachedPromptTokens: cached,
+            cacheTrackedPromptTokens: tracked,
+            completionTokens: completion,
+            cost,
+            costBreakdown: zeroBreakdown(true),
+            firstSeenAt: caller.firstSeenAt,
+            lastSeenAt: caller.lastSeenAt,
+            lastApi: caller.lastApi,
+          };
+        }
+        return;
+      }
+    }
+
+    caller.models[LEGACY_CALLER_MODEL] = {
+      model: null,
+      attempts: caller.requests,
+      requests: caller.requests,
+      failures: caller.failures,
+      promptTokens: caller.promptTokens,
+      cachedPromptTokens: caller.cachedPromptTokens,
+      cacheTrackedPromptTokens: caller.cacheTrackedPromptTokens,
+      completionTokens: caller.completionTokens,
+      cost: caller.cost,
+      costBreakdown: zeroBreakdown(true),
+      firstSeenAt: caller.firstSeenAt,
+      lastSeenAt: caller.lastSeenAt,
+      lastApi: caller.lastApi,
+    };
+  }
+
+  private latestModel(): string | null {
+    let best: { at: number; model: string } | null = null;
+    for (const stat of Object.values(this.#data.stats.apis)) {
+      if (!stat.lastModel) continue;
+      const at = stat.lastUsedAt ? Date.parse(stat.lastUsedAt) : 0;
+      if (!best || at > best.at) best = { at, model: stat.lastModel };
+    }
+    if (best) return best.model;
+    for (const caller of Object.values(this.#data.callers)) {
+      if (caller.lastModel) return caller.lastModel;
+    }
+    return null;
   }
 
   resetUsage(): void {
@@ -520,6 +914,7 @@ export class StateStore {
       cacheTrackedPromptTokens: 0,
       completionTokens: 0,
       cost: 0,
+      costBreakdown: zeroBreakdown(),
       apis: blankApis(),
     };
     for (const [code, record] of Object.entries(this.#data.models)) {
@@ -532,6 +927,7 @@ export class StateStore {
         cacheTrackedPromptTokens: 0,
         completionTokens: 0,
         cost: 0,
+        costBreakdown: zeroBreakdown(),
       };
     }
     this.#data.callers = {};
@@ -604,6 +1000,7 @@ function hydrate(source: Record<string, unknown>): PersistedState {
       cacheTrackedPromptTokens: numberOr(record.cacheTrackedPromptTokens, 0),
       completionTokens: numberOr(record.completionTokens, 0),
       cost: numberOr(record.cost, 0),
+      costBreakdown: readBreakdown(record.costBreakdown),
       apis: hydrateApis(record.apis),
     };
   }
@@ -624,10 +1021,12 @@ function hydrate(source: Record<string, unknown>): PersistedState {
         cacheTrackedPromptTokens: numberOr(record.cacheTrackedPromptTokens, 0),
         completionTokens: numberOr(record.completionTokens, 0),
         cost: numberOr(record.cost, 0),
+        costBreakdown: readBreakdown(record.costBreakdown),
         firstSeenAt: typeof record.firstSeenAt === "string" ? record.firstSeenAt : base.stats.startedAt,
         lastSeenAt: typeof record.lastSeenAt === "string" ? record.lastSeenAt : base.stats.startedAt,
         lastModel: typeof record.lastModel === "string" ? record.lastModel : null,
         lastApi: isApiKindValue(record.lastApi) ? record.lastApi : null,
+        models: hydrateCallerModels(record.models, base.stats.startedAt),
       };
     }
   }
@@ -636,7 +1035,12 @@ function hydrate(source: Record<string, unknown>): PersistedState {
   if (models && typeof models === "object" && !Array.isArray(models)) {
     for (const [code, raw] of Object.entries(models as Record<string, unknown>)) {
       if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
-      base.models[code] = { ...blankRecord(code), ...(raw as Partial<ModelRecord>) };
+      const record = raw as Record<string, unknown>;
+      base.models[code] = {
+        ...blankRecord(code),
+        ...(record as Partial<ModelRecord>),
+        costBreakdown: readBreakdown(record.costBreakdown),
+      };
     }
   }
 
@@ -718,11 +1122,50 @@ function hydrateApis(raw: unknown): ApiStats {
       cacheTrackedPromptTokens: numberOr(record.cacheTrackedPromptTokens, 0),
       completionTokens: numberOr(record.completionTokens, 0),
       cost: numberOr(record.cost, 0),
+      costBreakdown: readBreakdown(record.costBreakdown),
       lastModel: typeof record.lastModel === "string" ? record.lastModel : null,
       lastUsedAt: typeof record.lastUsedAt === "string" ? record.lastUsedAt : null,
     };
   }
   return apis;
+}
+
+function readBreakdown(raw: unknown): CostBreakdown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return zeroBreakdown();
+  const record = raw as Record<string, unknown>;
+  return {
+    input: numberOr(record.input, 0),
+    cachedInput: numberOr(record.cachedInput, 0),
+    output: numberOr(record.output, 0),
+    cacheSaved: numberOr(record.cacheSaved, 0),
+    estimated: Boolean(record.estimated),
+  };
+}
+
+function hydrateCallerModels(raw: unknown, fallbackAt: string): Record<string, CallerModelStat> {
+  const models: Record<string, CallerModelStat> = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return models;
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const record = value as Record<string, unknown>;
+    const model = key === LEGACY_CALLER_MODEL ? null : typeof record.model === "string" ? record.model : key;
+    models[key] = {
+      model,
+      attempts: numberOr(record.attempts, 0),
+      requests: numberOr(record.requests, 0),
+      failures: numberOr(record.failures, 0),
+      promptTokens: numberOr(record.promptTokens, 0),
+      cachedPromptTokens: numberOr(record.cachedPromptTokens, 0),
+      cacheTrackedPromptTokens: numberOr(record.cacheTrackedPromptTokens, 0),
+      completionTokens: numberOr(record.completionTokens, 0),
+      cost: numberOr(record.cost, 0),
+      costBreakdown: readBreakdown(record.costBreakdown),
+      firstSeenAt: typeof record.firstSeenAt === "string" ? record.firstSeenAt : fallbackAt,
+      lastSeenAt: typeof record.lastSeenAt === "string" ? record.lastSeenAt : fallbackAt,
+      lastApi: isApiKindValue(record.lastApi) ? record.lastApi : null,
+    };
+  }
+  return models;
 }
 
 const MIN_CALIBRATION_RATIO = 0.2;

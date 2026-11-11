@@ -338,7 +338,7 @@
 }
 
 .stat dd small {
-  margin-left: 2px;
+  margin-left: 6px;
   color: var(--ink-soft);
   font-family: var(--font-sans);
   font-size: 11px;

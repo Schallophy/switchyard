@@ -11,7 +11,7 @@ Switchyard 不绑定任何厂商。默认提供商是阿里云百炼（DashScope
 - **免费额度优先**：把免费模型排在列表前面，额度耗尽（403）标记失效后自动转付费模型；失效模型在 `chain.retryDeadAfterMinutes`（默认 1 天）后自动重新参与选路，额度刷新当天又会从免费模型开始试，无需手动重置。
 - **按能力选路**：每个模型可声明 `chat` / `responses` / `completions` / `embeddings` 能力；`/v1/chat/completions` 只在 chat 模型中选，`/v1/responses` 只在 responses 模型中选，不做协议转译。
 - **上下文保护**：模型列表共用一个上下文窗口（默认 256K），超出时默认在转发前返回 400，避免把注定失败的请求送到提供商。
-- **调用方统计**：按请求携带的 Bearer Token 自动归类，分别统计各客户端的请求、失败、切换与真实 Token 消耗（输入不含缓存命中，并显示缓存命中率）。
+- **调用方统计**：按请求携带的 Bearer Token 自动归类，分别统计各客户端的请求、失败、切换与原始输入/输出 Token，展示缓存命中率、成本构成和同一调用方下的模型明细。
 - **健康状态机**：`unknown → alive / dead / invalid`，限流进入冷却而不污染健康状态；冷却期间暂时退出链路，到期自动重新入链；重启后状态持久化。
 - **模型排行**：在看板「排行」页按 Artificial Analysis 的 Intelligence Index 查看目录模型的能力排序；勾选多个模型后可以只看已选并按能力从高到低排列，逐行添加，不会自动加入模型列表。
 - **管理看板**：模型、排行、用量、事件、设置五个页面，主题始终跟随系统深浅色，全部本地访问。
@@ -227,15 +227,15 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 
 ### 调用方统计
 
-网关从 `Authorization: Bearer <token>` 中提取调用方标识，按标识累计请求数、失败数、故障转移次数与 Token 用量，并持久化到 `state.json`。输入 Token 会扣除提供商上报的缓存命中部分，并单独显示缓存命中率。
+网关从 `Authorization: Bearer <token>` 中提取调用方标识，按标识累计请求数、失败数、故障转移次数与 Token 用量，并持久化到 `state.json`。输入的原始 Token 与 OpenAI 的 `usage.prompt_tokens` 一致，包含缓存命中；看板另外显示缓存命中量与命中率。同一调用方还会按模型拆分累计，展开明细能看到每个模型各自的请求、Token、成本与最近使用。
 
 - `sk-opencode` → 标签 `opencode`；不带 Key 的请求记为「匿名」。
 - 长随机 Key 只显示掩码（如 `sk-abc…wxyz`），状态文件保存的是 SHA-256 短哈希与派生标签，不保存完整 Key。
 - `gatewayToken` 为空时会接受任意 Bearer 值，这正是区分多个客户端的前提；设置后只有该令牌会被接受，所有流量会归到同一个调用方。
-- Token 统计依赖提供商返回 `usage`；流式请求默认注入 `stream_options.include_usage`，提供商不返回 usage 时只计请求数。缓存明细支持 `prompt_tokens_details.cached_tokens`、`input_tokens_details.cached_tokens` 与 `prompt_cache_hit_tokens`；未上报缓存明细的历史请求无法回算，缓存命中率会显示为「—」。
+- Token 统计依赖提供商返回 `usage`；流式请求默认注入 `stream_options.include_usage`，提供商不返回 usage 时只计请求数。缓存明细支持 `prompt_tokens_details.cached_tokens`、`input_tokens_details.cached_tokens` 与 `prompt_cache_hit_tokens`；未上报缓存明细的历史请求仍保留原始输入，只是无法拆分新增输入与缓存命中，命中率显示为「—」。
 - 用量按协议分开累计：`chat`（`/v1/chat/completions`）、`completions`（`/v1/completions`）、`responses`（`/v1/responses`）、`embeddings`（`/v1/embeddings`）。看板右上角实时显示最近一次请求走的协议，「用量」页显示各协议的请求数，调用方表格里的「协议」列是它最近一次请求的协议。
 - **只有用户加入模型列表的模型才会写进 `state.json`**：目录里拉到的候选模型、以及列表外透传请求用到的模型，都不会生成模型记录（不占 `models`、不保存健康状态与校准样本）。透传请求的 Token 仍然计入全局统计与调用方统计。模型从列表移除时，它的记录与校准样本一并删除。
-- 「设置 → 数据」可重置用量统计：清空请求、失败、切换与 Token 累计（含缓存命中数、协议计数）并删除调用方记录，模型健康状态、目录、事件和配置都会保留。重置后新请求按真实新增输入重新累计。
+- 「设置 → 数据」可重置用量统计：清空请求、失败、切换与 Token 累计（含缓存命中数、协议计数）并删除调用方记录，模型健康状态、目录、事件和配置都会保留。重置后新请求重新累计原始输入、缓存命中、成本拆分与模型明细。
 
 ## 配置
 
@@ -362,6 +362,8 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 成本 = 新增输入 × input + 缓存命中 × cachedInput + 输出 × output
 ```
 
+用量页会把总额拆成「输入 / 缓存输入 / 输出」三段，并单列「缓存节省」：命中的 Token 若按 input 单价计费会多出的金额。展开调用方可看到它自己的成本构成和按模型的明细。
+
 单价在看板「设置 → 定价」里填写：选好货币和计价单位后，每个模型都能加时段（峰谷、跨零点都支持），也可以直接用「峰谷两段」按键生成 `08:00–22:00` 与 `22:00–08:00` 两档再改数值。「起」「止」相同表示全天。也可以直接编辑 `config.json` 的 `pricing`。
 
 三项 token 都来自提供商的 `usage`，只有单价是本地配置。几个边界：
@@ -369,7 +371,7 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 - 时间段按网关进程的本地时区解释，必须完整覆盖 24 小时，否则保存配置时报错；
 - 只统计成功请求；提供商没返回 `usage` 的请求不计成本；
 - 不包含缓存写入费、免费额度、折扣、税与汇率；高上下文分档计价也无法按请求回拆；
-- 修改单价只影响之后的累计，不会重算已经记账的历史金额。历史数据可以用 `POST /api/usage/backfill-cost` 指定一个 `at` 时间（ISO 格式），按该时刻命中的价格档重算：模型与总计按各自 token 计算，调用方按最近使用的模型计价（单一模型或同价模型时准确）。
+- 修改单价只影响之后的累计，不会重算已经记账的历史金额。旧版本留下、没有成本拆分的数据会在启动时按 Token 与当前价格估算一次并缩放到已记录成本，明细会标注「估算」；历史调用方只有在唯一一个时才能从模型记录反推模型明细，多个调用方时归入「历史未归属」。也可以用 `POST /api/usage/backfill-cost` 指定一个 `at` 时间（ISO 格式）重算：模型与总计按各自 token 计算，调用方按模型明细或最近使用的模型计价。
 
 ### Responses 会话续接
 
@@ -396,7 +398,7 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 | --- | --- |
 | 模型 | 当前输出与状态、请求/切换/Token 统计、路由轨道（拖动或 `Alt+↑/↓` 调整优先级）、置顶、重置状态、编辑 API 能力、批量移出、添加模型面板（悬浮居中，按提供商与关键词筛选全部目录模型，已加入的显示为禁用、刷新目录）、发送测试、链路策略摘要与最近事件 |
 | 排行 | 按 Artificial Analysis 的 Intelligence Index 排序目录模型；多选后可只看已选并按能力从高到低排列，逐行添加；评分与勾选只在内存中，不写入配置 |
-| 用量 | 按调用方 API Key 汇总请求、失败、切换、真实输入/输出 Token、缓存命中率与按配置单价估算的成本，可分别排序并展开明细 |
+| 用量 | 按调用方 API Key 汇总请求、失败、切换、原始输入/输出 Token 与缓存命中率；展示全局成本构成（输入/缓存输入/输出与缓存节省），可分别排序，展开后可查看调用方的成本构成和按模型的用量明细 |
 | 输出 | 实时查看最近经过网关的模型输出，每条标出实际承接的模型、提供商、协议（Chat / Completions / Responses / Embeddings）、流式与否、耗时与用量；只存在内存里，重启进程即清空 |
 | 事件 | 切换、失效、限流、恢复、配置变更，可按类型过滤、关键词搜索、暂停实时刷新 |
 | 设置 | 网关、提供商、定价、故障转移、服务、日志、数据、原始 JSON 的完整表单；「定价」分组可逐模型填写单价与峰谷时段，「数据」分组可重置用量统计；底部保存栏统一提交 |
@@ -445,7 +447,7 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 - Chat Completions 与 Responses 不做隐式转译；跨协议使用请由客户端选择正确端点，或在 `modelApis` 中为模型补全能力声明。
 - 上下文窗口使用与 tokenizer 预切分对齐的近似估算（不是逐字符计数），用于拦截明显超限的请求；在窗口边界附近仍可能与提供商的精确 tokenizer 有偏差。`npm run calibrate` 会发送一组固定样本，对比估算值与提供商返回的 `usage.prompt_tokens`（默认访问 `http://127.0.0.1:8788/v1`，可用 `SWITCHYARD_CALIBRATION_URL` / `_MODEL` 覆盖）。该估算只影响超限拦截，不影响用量统计。
 - 网关会用每次成功请求的 `usage.prompt_tokens` 反过来校准估算，按「模型 × 是否带 tools」分别维护系数并持久化到 `state.json`；样本按请求长度加权，长度不足 100 token 估算的请求不参与校准。校准只改变超限拦截的判断，不改变统计与计费。
-- 调用方 Token 统计以提供商返回的 `usage` 为准；输入显示为扣除缓存命中后的新增部分，缓存命中率以提供商上报过缓存明细的请求为分母。提供商不返回 usage 时只统计请求次数，不估算 Token。
+- 调用方 Token 统计以提供商返回的 `usage` 为准；输入显示为原始 prompt Token（包含缓存命中），缓存命中率以提供商上报过缓存明细的请求为分母。提供商不返回 usage 时只统计请求次数，不估算 Token。
 - SSE 开始输出后不可回滚；极端情况下提供商中途断流只会结束当前响应。
 - 状态与事件是单机文件，不适用于多实例共享。
 - 看板保存会把 `config.json` 重写为规范化严格 JSON，手写的注释与字段顺序会丢失；想保留注释就只改文件、不开看板保存。

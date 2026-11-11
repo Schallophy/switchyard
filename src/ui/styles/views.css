@@ -488,9 +488,13 @@
 }
 
 .caller-meta {
+  display: -webkit-box;
   margin-top: 2px;
+  overflow: hidden;
   color: var(--ink-soft);
   font-size: 11.5px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .caller-last {
@@ -498,6 +502,210 @@
   font-family: var(--font-mono);
   font-size: 12px;
   word-break: break-all;
+}
+
+/* 成本构成：纯 CSS 堆叠条，不引入图表库 */
+.cost-panel {
+  margin: 18px 0 22px;
+  padding: 14px 16px;
+  border: 1px solid var(--rule-soft);
+  background: var(--surface);
+}
+
+.cost-panel.is-compact {
+  margin: 0;
+  padding: 12px 14px;
+  background: var(--paper);
+}
+
+.cost-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.cost-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.cost-badge {
+  padding: 0 5px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  color: var(--ink-soft);
+  font-size: 10.5px;
+  line-height: 16px;
+}
+
+.cost-total {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cost-bar {
+  display: flex;
+  height: 10px;
+  margin-top: 12px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--surface-sunken);
+}
+
+.cost-bar.is-empty {
+  background: var(--surface-sunken);
+}
+
+.cost-seg {
+  height: 100%;
+}
+
+.cost-seg + .cost-seg {
+  box-shadow: inset 1px 0 0 var(--surface);
+}
+
+.cost-seg[data-kind="input"],
+.cost-swatch[data-kind="input"] {
+  background: var(--usage-bar-input);
+}
+
+.cost-seg[data-kind="cached"],
+.cost-swatch[data-kind="cached"] {
+  background: var(--usage-bar-cached);
+}
+
+.cost-seg[data-kind="output"],
+.cost-swatch[data-kind="output"] {
+  background: var(--usage-bar-output);
+}
+
+.cost-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin: 12px 0 0;
+}
+
+.cost-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.cost-item dt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-soft);
+}
+
+.cost-item dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.cost-share {
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.cost-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 1px;
+}
+
+.cost-foot,
+.cost-empty {
+  margin: 10px 0 0;
+  color: var(--ink-soft);
+  font-size: 11.5px;
+}
+
+.cost-foot strong {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+
+/* 调用方详情：成本构成 + 事实条 + 模型明细 */
+.caller-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-top: 12px;
+}
+
+.caller-detail .detail-strip {
+  padding: 0;
+}
+
+.model-usage-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.model-usage-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.model-usage-count {
+  color: var(--ink-faint);
+  font-size: 11px;
+}
+
+.model-table {
+  font-size: 12px;
+}
+
+.model-table th,
+.model-table td {
+  padding: 7px 8px;
+}
+
+.model-table th:first-child,
+.model-table td:first-child {
+  padding-left: 0;
+}
+
+.model-table th:last-child,
+.model-table td:last-child {
+  padding-right: 0;
+}
+
+.model-name {
+  overflow-wrap: anywhere;
+}
+
+.model-name.is-legacy {
+  color: var(--ink-soft);
+  font-style: italic;
+}
+
+.usage-table th.col-lastSeenAt,
+.usage-table td[data-label="最近"] {
+  width: 64px;
+  white-space: nowrap;
+}
+
+@media (max-width: 1000px) {
+  .usage-table th,
+  .usage-table td {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
 }
 
 /* ============================================================
@@ -1729,6 +1937,11 @@
     font-weight: 400;
   }
 
+  .usage-table td[data-label="最近"] {
+    width: auto;
+    white-space: normal;
+  }
+
   .table .col-action {
     grid-column: 1 / -1;
     padding-top: 6px;
@@ -1747,6 +1960,29 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     gap: 6px;
+  }
+
+  .cost-panel,
+  .cost-panel.is-compact {
+    padding: 12px;
+  }
+
+  .cost-total {
+    font-size: 16px;
+  }
+
+  .cost-legend {
+    gap: 6px 18px;
+  }
+
+  .caller-detail {
+    gap: 12px;
+  }
+
+  .caller-meta {
+    display: block;
+    overflow: visible;
+    -webkit-line-clamp: none;
   }
 
   .rail-row {

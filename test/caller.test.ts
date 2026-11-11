@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { identifyCaller, labelFor } from "../src/core/caller.ts";
+import { usageCostParts } from "../src/core/pricing.ts";
 import { StateStore } from "../src/store/state.ts";
 
 test("readable caller tokens become readable labels", () => {
@@ -103,7 +104,11 @@ test("cache usage is counted for models and global stats", async () => {
     assert.equal(record?.cacheTrackedPromptTokens, 100);
     assert.equal(record?.cost, 0.5);
 
-    reopened.recomputeCosts((model) => (model === "model-a" ? 2 : 0));
+    reopened.recomputeCosts((model) =>
+      model === "model-a"
+        ? { input: 2, cachedInput: 0, output: 0, cacheSaved: 0 }
+        : { input: 0, cachedInput: 0, output: 0, cacheSaved: 0 },
+    );
     assert.equal(reopened.stats.cost, 2);
     assert.equal(reopened.get("model-a")?.cost, 2);
     assert.equal(reopened.callers()[0]?.cost, 2);
@@ -111,6 +116,262 @@ test("cache usage is counted for models and global stats", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("caller usage keeps per-model totals and cost splits", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "switchyard-state-"));
+  try {
+    const file = join(dir, "state.json");
+    const caller = identifyCaller({ authorization: "Bearer sk-opencode" });
+    const store = await StateStore.open({ file, codes: ["model-a", "model-b"] });
+    const usageA = {
+      promptTokens: 100,
+      completionTokens: 10,
+      totalTokens: 110,
+      cachedPromptTokens: 80,
+      cacheReported: true,
+    };
+    const usageB = {
+      promptTokens: 50,
+      completionTokens: 5,
+      totalTokens: 55,
+      cachedPromptTokens: 0,
+      cacheReported: false,
+    };
+    const partsA = { input: 0.2, cachedInput: 0.1, output: 0.3, cacheSaved: 0.4 };
+    const partsB = { input: 0.15, cachedInput: 0, output: 0.05, cacheSaved: 0 };
+
+    store.addCallerUsage(caller, usageA, "model-a", 0.6, "chat", partsA);
+    store.addCallerUsage(caller, usageB, "model-b", 0.2, "chat", partsB);
+    store.markCallerModelFailure(caller, "model-a", "responses");
+    await store.flush();
+
+    const reopened = await StateStore.open({ file, codes: ["model-a", "model-b"] });
+    const [record] = reopened.callers();
+    assert.equal(record?.promptTokens, 150);
+    assert.equal(record?.cachedPromptTokens, 80);
+    assert.equal(record?.cacheTrackedPromptTokens, 100);
+    assert.equal(record?.completionTokens, 15);
+    assert.equal(record?.cost, 0.8);
+    assert.deepEqual(record?.costBreakdown, {
+      input: 0.35,
+      cachedInput: 0.1,
+      output: 0.35,
+      cacheSaved: 0.4,
+      estimated: false,
+    });
+
+    const modelA = record?.models["model-a"];
+    assert.equal(modelA?.attempts, 2);
+    assert.equal(modelA?.requests, 1);
+    assert.equal(modelA?.failures, 1);
+    assert.equal(modelA?.promptTokens, 100);
+    assert.equal(modelA?.cachedPromptTokens, 80);
+    assert.equal(modelA?.completionTokens, 10);
+    assert.equal(modelA?.cost, 0.6);
+    assert.equal(modelA?.costBreakdown.input, 0.2);
+    assert.equal(modelA?.costBreakdown.cacheSaved, 0.4);
+    assert.equal(modelA?.lastApi, "responses");
+
+    const modelB = record?.models["model-b"];
+    assert.equal(modelB?.attempts, 1);
+    assert.equal(modelB?.requests, 1);
+    assert.equal(modelB?.failures, 0);
+    assert.equal(modelB?.promptTokens, 50);
+    assert.equal(modelB?.cacheTrackedPromptTokens, 0);
+    assert.equal(modelB?.cost, 0.2);
+    assert.equal(modelB?.lastApi, "chat");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("legacy usage is backfilled with per-model details for a sole caller", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "switchyard-state-"));
+  try {
+    const file = join(dir, "state.json");
+    await writeFile(
+      file,
+      JSON.stringify({
+        version: 1,
+        models: {
+          "model-a": {
+            code: "model-a",
+            health: "alive",
+            promptTokens: 1_000,
+            cachedPromptTokens: 800,
+            cacheTrackedPromptTokens: 1_000,
+            completionTokens: 100,
+            cost: 1_360,
+            requests: 1,
+            failures: 0,
+            lastUsedAt: "2026-01-01T00:00:01.000Z",
+          },
+          "model-b": {
+            code: "model-b",
+            health: "alive",
+            promptTokens: 500,
+            cachedPromptTokens: 0,
+            cacheTrackedPromptTokens: 500,
+            completionTokens: 50,
+            cost: 1_400,
+            requests: 1,
+            failures: 0,
+            lastUsedAt: "2026-01-01T00:00:02.000Z",
+          },
+        },
+        callers: {
+          caller_opencode: {
+            id: "caller_opencode",
+            label: "opencode",
+            requests: 2,
+            promptTokens: 1_500,
+            cachedPromptTokens: 800,
+            cacheTrackedPromptTokens: 1_500,
+            completionTokens: 150,
+            cost: 2_760,
+            firstSeenAt: "2026-01-01T00:00:00.000Z",
+            lastSeenAt: "2026-01-01T00:00:02.000Z",
+            lastModel: "model-b",
+            lastApi: "chat",
+          },
+        },
+        stats: {
+          startedAt: "2026-01-01T00:00:00.000Z",
+          requests: 2,
+          promptTokens: 1_500,
+          cachedPromptTokens: 800,
+          cacheTrackedPromptTokens: 1_500,
+          completionTokens: 150,
+          cost: 2_760,
+          apis: {
+            chat: {
+              requests: 2,
+              promptTokens: 1_500,
+              cachedPromptTokens: 800,
+              cacheTrackedPromptTokens: 1_500,
+              completionTokens: 150,
+              cost: 2_760,
+              lastModel: "model-b",
+              lastUsedAt: "2026-01-01T00:00:02.000Z",
+            },
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    const store = await StateStore.open({ file, codes: ["model-a", "model-b"] });
+    const tier = { from: "00:00", to: "00:00", input: 2, cachedInput: 0.2, output: 8 };
+    const filled = store.backfillUsageDetails((model, usage) =>
+      model ? usageCostParts(usage, tier, 1_000_000) : null,
+    );
+    assert.equal(filled, true);
+
+    const caller = store.callers()[0];
+    assert.ok(caller);
+    assert.deepEqual(Object.keys(caller.models).sort(), ["model-a", "model-b"]);
+    assert.equal(caller.models["model-a"]?.attempts, 1);
+    assert.equal(caller.models["model-a"]?.cost, 1_360);
+    assert.equal(caller.models["model-b"]?.cost, 1_400);
+    assert.equal(caller.costBreakdown.estimated, true);
+    assert.ok(Math.abs(caller.costBreakdown.input - (200 * 2 + 500 * 2)) < 1e-6);
+    assert.ok(Math.abs(caller.costBreakdown.cachedInput - (800 * 0.2)) < 1e-6);
+    assert.ok(Math.abs(caller.costBreakdown.output - (100 * 8 + 50 * 8)) < 1e-6);
+    assert.ok(Math.abs(sumOf(caller.costBreakdown) - 2_760) < 1e-6);
+    assert.equal(store.stats.costBreakdown.estimated, true);
+    assert.ok(Math.abs(sumOf(store.stats.costBreakdown) - 2_760) < 1e-6);
+
+    assert.equal(
+      store.backfillUsageDetails((model, usage) =>
+        model ? usageCostParts(usage, tier, 1_000_000) : null,
+      ),
+      false,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("legacy usage with several callers stays in the unassigned bucket", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "switchyard-state-"));
+  try {
+    const file = join(dir, "state.json");
+    await writeFile(
+      file,
+      JSON.stringify({
+        version: 1,
+        models: {
+          "model-a": { code: "model-a", promptTokens: 1_000, cachedPromptTokens: 800, cacheTrackedPromptTokens: 1_000, completionTokens: 100, cost: 1_360, requests: 1 },
+        },
+        callers: {
+          caller_one: {
+            id: "caller_one",
+            label: "one",
+            requests: 1,
+            promptTokens: 600,
+            cachedPromptTokens: 500,
+            cacheTrackedPromptTokens: 600,
+            completionTokens: 60,
+            cost: 800,
+            firstSeenAt: "2026-01-01T00:00:00.000Z",
+            lastSeenAt: "2026-01-01T00:00:01.000Z",
+            lastModel: "model-a",
+            lastApi: "chat",
+          },
+          caller_two: {
+            id: "caller_two",
+            label: "two",
+            requests: 1,
+            promptTokens: 400,
+            cachedPromptTokens: 300,
+            cacheTrackedPromptTokens: 400,
+            completionTokens: 40,
+            cost: 560,
+            firstSeenAt: "2026-01-01T00:00:00.000Z",
+            lastSeenAt: "2026-01-01T00:00:02.000Z",
+            lastModel: "model-a",
+            lastApi: "chat",
+          },
+        },
+        stats: {
+          startedAt: "2026-01-01T00:00:00.000Z",
+          requests: 2,
+          promptTokens: 1_000,
+          cachedPromptTokens: 800,
+          cacheTrackedPromptTokens: 1_000,
+          completionTokens: 100,
+          cost: 1_360,
+        },
+      }),
+      "utf8",
+    );
+
+    const store = await StateStore.open({ file, codes: ["model-a"] });
+    const tier = { from: "00:00", to: "00:00", input: 2, cachedInput: 0.2, output: 8 };
+    store.backfillUsageDetails((model, usage) =>
+      model ? usageCostParts(usage, tier, 1_000_000) : null,
+    );
+
+    const callers = store.callers();
+    assert.equal(callers.length, 2);
+    for (const caller of callers) {
+      const buckets = Object.values(caller.models);
+      assert.equal(buckets.length, 1);
+      assert.equal(buckets[0]?.model, null);
+      assert.equal(buckets[0]?.cost, caller.cost);
+      assert.equal(buckets[0]?.costBreakdown.estimated, true);
+      assert.ok(Math.abs(sumOf(buckets[0]!.costBreakdown) - caller.cost) < 1e-6);
+    }
+    assert.equal(store.stats.costBreakdown.estimated, true);
+    assert.ok(Math.abs(sumOf(store.stats.costBreakdown) - 1_360) < 1e-6);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+function sumOf(breakdown: { input: number; cachedInput: number; output: number }): number {
+  return breakdown.input + breakdown.cachedInput + breakdown.output;
+}
 
 test("resetting usage clears counters but keeps model state", async () => {
   const dir = await mkdtemp(join(tmpdir(), "switchyard-state-"));
