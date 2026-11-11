@@ -5,7 +5,7 @@ export interface CallerIdentity {
   label: string;
 }
 
-export const ANONYMOUS_CALLER: CallerIdentity = { id: "anonymous", label: "未提供 Key" };
+export const ANONYMOUS_CALLER: CallerIdentity = { id: "anonymous", label: "匿名" };
 export const CONSOLE_CALLER: CallerIdentity = { id: "console", label: "看板自测" };
 
 export function identifyCaller(headers: Record<string, string | string[] | undefined>): CallerIdentity {

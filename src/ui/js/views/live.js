@@ -19,13 +19,13 @@ const API_TITLES = {
 const MAX_LOCAL = 80;
 
 const FINISH_LABELS = {
-  stop: "正常结束",
+  stop: "自然结束",
   length: "达到长度上限",
-  tool_calls: "工具调用",
-  content_filter: "内容过滤",
-  completed: "完成",
-  done: "完成",
-  failed: "失败",
+  tool_calls: "请求调用工具",
+  content_filter: "触发内容过滤",
+  completed: "正常完成",
+  done: "正常完成",
+  failed: "执行失败",
   incomplete: "未完成",
 };
 
@@ -192,7 +192,7 @@ function paint() {
     <div class="page-head">
       <div>
         <h1 class="page-title">实时输出</h1>
-        <p class="page-sub">查看最近经过网关的模型输出，每条都标出实际承接的模型和协议；工具调用会单独列出，没有可见文本时可直接展开原始响应排查。内容只保存在内存里，刷新页面或重启进程后清空。</p>
+        <p class="page-sub">查看网关最近的模型响应。每条记录标注实际承接的模型、协议和结束原因；无文本内容时可展开原始响应。仅保存在内存中，重启后清空。</p>
       </div>
       <div class="page-tools">
         <span class="live-state">
@@ -200,15 +200,15 @@ function paint() {
           <span id="live-text">${local.connected ? "实时连接" : "连接中…"}</span>
         </span>
         <button class="btn" type="button" data-action="scroll" id="live-scroll-btn">暂停滚动</button>
-        <button class="btn" type="button" data-action="clear">清空</button>
+        <button class="btn" type="button" data-action="clear" title="清空实时输出，不影响历史记录">清空记录</button>
       </div>
     </div>
 
     <dl class="statline live-summary">
-      <div class="stat"><dt>最近</dt><dd id="live-count">0</dd></div>
-      <div class="stat"><dt>流式中</dt><dd id="live-streaming">0</dd></div>
+      <div class="stat"><dt>记录</dt><dd id="live-count">0</dd></div>
+      <div class="stat"><dt>生成中</dt><dd id="live-streaming">0</dd></div>
       <div class="stat"><dt>失败</dt><dd id="live-errors">0</dd></div>
-      <div class="stat"><dt>保留</dt><dd id="live-retention" title="只保留最近的会话，且单条输出会截断">—</dd></div>
+      <div class="stat"><dt>保留</dt><dd id="live-retention" title="仅保留最近若干条，单条正文过长会截断">—</dd></div>
     </dl>
 
     <div class="events-tools live-tools">
@@ -223,8 +223,8 @@ function paint() {
           )
           .join("")}
       </div>
-      <input class="input events-search" id="live-search" type="search" placeholder="搜索模型、提供商或调用方" autocomplete="off" aria-label="搜索实时输出">
-      <label class="check live-errors-toggle"><input id="live-only-errors" type="checkbox"> 只看失败</label>
+      <input class="input events-search" id="live-search" type="search" placeholder="搜索模型、提供商、调用方或工具" autocomplete="off" aria-label="搜索实时输出">
+      <label class="check live-errors-toggle"><input id="live-only-errors" type="checkbox"> 仅看失败</label>
     </div>
 
     <div id="live-list"></div>
@@ -280,9 +280,9 @@ const TOOL_LABELS = {
   write: "写入",
   edit: "编辑",
   read: "读取",
-  grep: "搜索",
-  glob: "匹配",
-  webfetch: "抓取",
+  grep: "内容搜索",
+  glob: "文件匹配",
+  webfetch: "网页抓取",
   task: "子任务",
   list: "目录",
   apply_patch: "补丁",
@@ -367,6 +367,27 @@ function countLines(value) {
   return text ? text.split(/\r?\n/).length : 0;
 }
 
+function pathView(value) {
+  const full = String(value ?? "").trim();
+  if (!full) return null;
+  const sep = full.includes("\\") ? "\\" : "/";
+  const parts = full.split(/[\\/]+/).filter(Boolean);
+  const base = parts.at(-1) ?? full;
+  const joined = parts.slice(0, -1).join(sep);
+  const dir = full.startsWith("/") ? `/${joined}` : joined;
+  return { base, dir, full };
+}
+
+function pathHtml(value) {
+  const info = pathView(value);
+  if (!info) return "";
+  const dir = info.dir.length > 64 ? `…${info.dir.slice(-63)}` : info.dir;
+  return `<div class="live-call-path" title="${esc(info.full)}">
+    <code class="live-call-file">${esc(info.base)}</code>
+    ${dir ? `<span class="live-call-dir">${esc(dir)}</span>` : ""}
+  </div>`;
+}
+
 function prettyArgs(args) {
   const parsed = parseToolArgs(args);
   if (!parsed) return args;
@@ -386,7 +407,8 @@ export function toolCallHtml(call) {
 
   const line = (value, className = "") => {
     if (value === undefined || value === null || value === "") return;
-    parts.push(`<code class="live-call-line ${className}">${esc(clipText(value, 600))}</code>`);
+    const classes = className ? `live-call-line ${className}` : "live-call-line";
+    parts.push(`<code class="${classes}">${esc(clipText(value, 600))}</code>`);
   };
   const note = (value) => {
     if (!value) return;
@@ -415,11 +437,17 @@ export function toolCallHtml(call) {
         const workdir = textOf(
           pick(parsed, ["workdir", "cwd", "working_directory", "workingDirectory"]),
         );
-        if (workdir) extras.push(`目录 ${clipText(workdir, 180)}`);
+        if (workdir) extras.push(`工作目录 ${clipText(workdir, 180)}`);
         const timeout = pick(parsed, ["timeout", "timeout_ms", "timeoutMs"]);
-        if (timeout !== undefined) extras.push(`超时 ${clipText(timeout, 20)} ms`);
+        if (timeout !== undefined) {
+          extras.push(
+            Number.isFinite(Number(timeout))
+              ? `超时 ${fmtInt(timeout)} ms`
+              : `超时 ${clipText(timeout, 30)}`,
+          );
+        }
         const description = textOf(pick(parsed, ["description"]));
-        if (description) extras.push(clipText(description, 180));
+        if (description) extras.push(`说明 ${clipText(description, 180)}`);
         note(extras.join(" · "));
         break;
       }
@@ -435,7 +463,7 @@ export function toolCallHtml(call) {
             "targetFile",
           ]),
         );
-        line(path, "live-call-path");
+        parts.push(pathHtml(path));
 
         let oldText = textOf(
           pick(parsed, ["oldString", "old_string", "old_str", "oldText", "old_text", "search", "old"]),
@@ -458,9 +486,9 @@ export function toolCallHtml(call) {
           if (newText) diff.push(`<span class="live-call-add">+ ${esc(firstLine(newText))}</span>`);
           parts.push(`<div class="live-call-diff">${diff.join("")}</div>`);
           parts.push(
-            `<p class="live-call-note live-call-stat"><span class="live-call-add">+${fmtInt(
+            `<p class="live-call-stat"><span class="live-call-add">+${fmtInt(
               countLines(newText),
-            )}</span><span class="live-call-del">-${fmtInt(countLines(oldText))}</span></p>`,
+            )} 行</span><span class="live-call-del">−${fmtInt(countLines(oldText))} 行</span></p>`,
           );
         } else if (diffText) {
           note(`补丁 ${fmtInt(countLines(diffText))} 行`);
@@ -471,15 +499,15 @@ export function toolCallHtml(call) {
         const path = textOf(
           pick(parsed, ["path", "filePath", "file_path", "file", "filename", "target_file", "targetFile"]),
         );
-        line(path, "live-call-path");
+        parts.push(pathHtml(path));
         const content = textOf(
           pick(parsed, ["content", "file_text", "fileText", "file_content", "text"]),
         );
         if (content) {
           parts.push(
-            `<p class="live-call-note live-call-stat"><span class="live-call-add">+${fmtInt(
+            `<p class="live-call-stat"><span class="live-call-add">+${fmtInt(
               countLines(content),
-            )}</span><span>${fmtInt(content.length)} 字符</span></p>`,
+            )} 行</span><span class="live-call-size">${fmtInt(content.length)} 字符</span></p>`,
           );
         }
         break;
@@ -488,10 +516,10 @@ export function toolCallHtml(call) {
         const path = textOf(
           pick(parsed, ["path", "filePath", "file_path", "file", "filename", "target_file", "targetFile"]),
         );
-        line(path, "live-call-path");
+        parts.push(pathHtml(path));
         const extras = [];
-        if (parsed.offset !== undefined) extras.push(`从第 ${fmtInt(parsed.offset)} 行`);
-        if (parsed.limit !== undefined) extras.push(`读 ${fmtInt(parsed.limit)} 行`);
+        if (parsed.offset !== undefined) extras.push(`从第 ${fmtInt(parsed.offset)} 行开始`);
+        if (parsed.limit !== undefined) extras.push(`读取 ${fmtInt(parsed.limit)} 行`);
         if (parsed.range !== undefined) extras.push(`范围 ${clipText(textOf(parsed.range), 60)}`);
         note(extras.join(" · "));
         break;
@@ -500,16 +528,16 @@ export function toolCallHtml(call) {
         line(textOf(pick(parsed, ["pattern", "regex", "query", "search"])), "live-call-pattern");
         const extras = [];
         const path = textOf(pick(parsed, ["path", "filePath", "file_path", "directory", "dir"]));
-        if (path) extras.push(clipText(path, 180));
+        if (path) extras.push(`范围 ${clipText(path, 180)}`);
         const include = textOf(pick(parsed, ["include", "glob", "file_pattern", "filePattern"]));
-        if (include) extras.push(`匹配 ${clipText(include, 80)}`);
+        if (include) extras.push(`文件 ${clipText(include, 80)}`);
         note(extras.join(" · "));
         break;
       }
       case "glob": {
         line(textOf(pick(parsed, ["pattern", "glob", "query"])), "live-call-pattern");
         const path = textOf(pick(parsed, ["path", "directory", "dir"]));
-        if (path) note(clipText(path, 200));
+        if (path) note(`范围 ${clipText(path, 200)}`);
         break;
       }
       case "webfetch": {
@@ -525,8 +553,10 @@ export function toolCallHtml(call) {
         break;
       }
       case "list": {
-        line(textOf(pick(parsed, ["path", "directory", "dir"])) || ".", "live-call-path");
-        if (parsed.recursive) note("递归");
+        const dirPath = textOf(pick(parsed, ["path", "directory", "dir"]));
+        if (dirPath) parts.push(pathHtml(dirPath));
+        else note("当前目录");
+        if (parsed.recursive) note("包含子目录");
         break;
       }
       case "apply_patch": {
@@ -535,56 +565,70 @@ export function toolCallHtml(call) {
           const files = [...patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)].map(
             (match) => match[1],
           );
-          if (files.length) line(files.join("、"), "live-call-path");
-          const first = patch.split(/\r?\n/).find((part) => part.trim());
-          note(clipText(first ?? "", 180));
-          note(`补丁 ${fmtInt(countLines(patch))} 行`);
+          if (files.length) parts.push(files.map(pathHtml).join(""));
+          const size = `补丁 ${fmtInt(countLines(patch))} 行`;
+          note(files.length ? `涉及 ${fmtInt(files.length)} 个文件 · ${size}` : size);
         }
         break;
       }
     }
   }
 
-  if (parts.length === 0) {
+  if (!parts.some(Boolean)) {
     const raw = args ? prettyArgs(args) : "（无参数）";
-    parts.push(`<pre class="live-call-args">${esc(clipText(raw, 800))}</pre>`);
+    parts.push(
+      `<div class="live-call-fallback"><span class="live-call-label">参数</span><pre class="live-call-args">${esc(
+        clipText(raw, 800),
+      )}</pre></div>`,
+    );
   }
 
   const label = TOOL_LABELS[kind];
   return `<div class="live-call" data-tool="${esc(name)}">
     <div class="live-call-head">
-      <span class="live-call-name">${esc(name)}</span>
-      ${label ? `<span class="live-call-kind">${esc(label)}</span>` : ""}
+      <span class="live-call-title">${esc(label ?? name)}</span>
+      ${label ? `<span class="live-call-name">${esc(name)}</span>` : ""}
     </div>
-    <div class="live-call-body">${parts.join("")}</div>
+    <div class="live-call-body">${parts.filter(Boolean).join("")}</div>
   </div>`;
 }
 
 function cardHtml(session) {
   const status = session.status;
-  const statusLabel = status === "streaming" ? "流式中" : status === "error" ? "失败" : "完成";
+  const statusLabel = status === "streaming" ? "生成中" : status === "error" ? "失败" : "已完成";
   const toolCalls = Array.isArray(session.toolCalls) ? session.toolCalls : [];
   const hasToolCalls = toolCalls.length > 0;
-  const text = session.text || (status === "streaming" || hasToolCalls ? "" : "（无文本输出）");
+  const text = session.text || "";
+  const showText = Boolean(text) || status === "streaming";
+  const showEmpty = !showText && !hasToolCalls && !session.error;
   const rawOpen = !session.text && !hasToolCalls && !session.error;
   const usage = session.usage;
+  const cachedTokens = usage ? Math.max(0, usage.cachedPromptTokens || 0) : 0;
+  const inputTokens = usage ? Math.max(0, usage.promptTokens - cachedTokens) : 0;
   const meta = [
-    session.stream ? "流式" : "非流式",
-    session.failovers > 0 ? `切换 ${fmtInt(session.failovers)} 次` : null,
-    session.latencyMs > 0 ? fmtMs(session.latencyMs) : null,
-    usage ? `输入 ${fmtTokens(Math.max(0, usage.promptTokens - usage.cachedPromptTokens))} · 输出 ${fmtTokens(usage.completionTokens)}` : null,
-    session.bytes > 0 ? fmtBytes(session.bytes) : null,
-    session.truncated ? "已截断" : null,
-    session.finishReason ? `结束：${FINISH_LABELS[session.finishReason] ?? session.finishReason}` : null,
+    [session.stream ? "流式" : "非流式", ""],
+    [session.failovers > 0 ? `故障转移 ${fmtInt(session.failovers)} 次` : null, "hold"],
+    [session.latencyMs > 0 ? fmtMs(session.latencyMs) : null, ""],
+    [usage ? `输入 ${fmtTokens(inputTokens)}` : null, ""],
+    [usage && cachedTokens > 0 ? `缓存 ${fmtTokens(cachedTokens)}` : null, ""],
+    [usage ? `输出 ${fmtTokens(usage.completionTokens)}` : null, ""],
+    [session.bytes > 0 ? fmtBytes(session.bytes) : null, ""],
+    [session.truncated ? "已截断" : null, "hold"],
+    [
+      session.finishReason
+        ? `结束原因：${FINISH_LABELS[session.finishReason] ?? session.finishReason}`
+        : null,
+      "",
+    ],
   ]
-    .filter(Boolean)
-    .map((item) => `<span>${esc(item)}</span>`)
+    .filter(([text]) => Boolean(text))
+    .map(([text, tone]) => `<span${tone ? ` data-tone="${tone}"` : ""}>${esc(text)}</span>`)
     .join("");
 
   return `
     <article class="live-item" data-live-id="${session.id}" data-status="${status}" data-api="${esc(
       session.api,
-    )}">
+    )}" data-finish="${esc(session.finishReason || "")}">
       <header class="live-head">
         <time class="live-time" datetime="${esc(session.at)}">${fmtClock(session.at)}</time>
         <span class="api-badge" title="${esc(API_TITLES[session.api] ?? session.api)}">${esc(
@@ -592,7 +636,11 @@ function cardHtml(session) {
         )}</span>
         <code class="live-model" title="${esc(session.model)}">${esc(session.model)}</code>
         <span class="live-chip">${esc(session.caller)}</span>
-        ${session.provider ? `<span class="live-chip">${esc(session.provider)}</span>` : ""}
+        ${
+          session.provider && !session.model.startsWith(`${session.provider}/`)
+            ? `<span class="live-chip">${esc(session.provider)}</span>`
+            : ""
+        }
         ${
           session.requested && session.requested !== session.model && session.requested !== "auto"
             ? `<span class="live-chip">请求 ${esc(session.requested)}</span>`
@@ -602,11 +650,12 @@ function cardHtml(session) {
         <span class="live-meta">${meta}</span>
       </header>
       ${session.error ? `<div class="live-error">${esc(session.error)}</div>` : ""}
-      ${text || status === "streaming" ? `<pre class="live-text" data-role="text">${esc(text)}</pre>` : ""}
+      ${showText ? `<pre class="live-text" data-role="text">${esc(text)}</pre>` : ""}
       ${hasToolCalls ? `<div class="live-calls">${toolCalls.map(toolCallHtml).join("")}</div>` : ""}
+      ${showEmpty ? `<p class="live-empty">本轮响应没有文本内容</p>` : ""}
       ${session.rawLength > 0 && status !== "streaming"
         ? `<details class="live-raw"${rawOpen ? " open" : ""} data-live-raw="${session.id}">
-          <summary>${rawOpen ? "原始响应（无可见文本）" : "原始响应"}</summary>
+          <summary>${rawOpen ? "原始响应 · 无文本内容" : "原始响应"}</summary>
           <pre class="live-raw-text" data-role="raw">加载中…</pre>
         </details>`
         : ""
@@ -618,11 +667,11 @@ function cardHtml(session) {
 function emptyHtml() {
   const active = local.query || local.api !== "all" || local.onlyErrors;
   return `<div class="empty">
-    <p class="empty-title">${active ? "没有匹配的输出" : "还没有实时输出"}</p>
+    <p class="empty-title">${active ? "没有匹配的记录" : "暂无实时输出"}</p>
     <p>${
       active
-        ? "换一个关键词或协议筛选试试。"
-        : "通过网关发起一次对话后，模型的回复会实时出现在这里。"
+        ? "调整关键词或协议筛选后重试。"
+        : "发起一次模型请求后，响应会实时显示在这里。"
     }</p>
   </div>`;
 }

@@ -231,7 +231,7 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 
 网关从 `Authorization: Bearer <token>` 中提取调用方标识，按标识累计请求数、失败数、故障转移次数与 Token 用量，并持久化到 `state.json`。输入 Token 会扣除提供商上报的缓存命中部分，并单独显示缓存命中率。
 
-- `sk-opencode` → 标签 `opencode`；不带 Key 的请求记为「未提供 Key」。
+- `sk-opencode` → 标签 `opencode`；不带 Key 的请求记为「匿名」。
 - 长随机 Key 只显示掩码（如 `sk-abc…wxyz`），状态文件保存的是 SHA-256 短哈希与派生标签，不保存完整 Key。
 - `gatewayToken` 为空时会接受任意 Bearer 值，这正是区分多个客户端的前提；设置后只有该令牌会被接受，所有流量会归到同一个调用方。
 - Token 统计依赖提供商返回 `usage`；流式请求默认注入 `stream_options.include_usage`，提供商不返回 usage 时只计请求数。缓存明细支持 `prompt_tokens_details.cached_tokens`、`input_tokens_details.cached_tokens` 与 `prompt_cache_hit_tokens`；未上报缓存明细的历史请求无法回算，缓存命中率会显示为「—」。
