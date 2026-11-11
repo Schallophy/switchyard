@@ -25,9 +25,7 @@ export const DEFAULT_CONTEXT_WINDOW = 256_000;
 export const DEFAULT_RETRY_DEAD_AFTER_MINUTES = 1_440;
 
 export interface ChainConfig {
-  /** 当前用于输出的模型；不在 models 里时回退到 models[0]。 */
-  active: string;
-  /** 优先级从高到低。auto 请求从 active 开始，按这个顺序回退。 */
+  /** 优先级从高到低；第一项就是 auto 的起点。 */
   models: string[];
   context: ContextConfig;
   /** dead 模型经过多少分钟后自动重新参与选路（免费额度按天刷新的场景）；0 = 只能手动重置。 */
@@ -185,7 +183,6 @@ export function defaultConfig(): GatewayConfig {
       maxFiles: DEFAULT_LOG_MAX_FILES,
     },
     chain: {
-      active: "",
       models: [],
       context: { window: DEFAULT_CONTEXT_WINDOW, onOverflow: "reject" },
       retryDeadAfterMinutes: DEFAULT_RETRY_DEAD_AFTER_MINUTES,
@@ -438,7 +435,6 @@ function readChain(
 
   if (!raw) {
     return {
-      active: "",
       models: [],
       context: { window: DEFAULT_CONTEXT_WINDOW, onOverflow: "reject" },
       retryDeadAfterMinutes: DEFAULT_RETRY_DEAD_AFTER_MINUTES,
@@ -447,10 +443,10 @@ function readChain(
 
   const models: string[] = [];
   const migrated = new Set<string>();
-  const normalize = (value: string): string => {
+  const normalize = (value: string, mark = true): string => {
     const parsed = splitModelCode(value, providers);
     if (parsed) return joinModelCode(parsed.provider, parsed.upstream);
-    migrated.add(value.trim());
+    if (mark) migrated.add(value.trim());
     return joinModelCode(bindings[value.trim()] ?? fallbackProvider, value);
   };
 
@@ -468,14 +464,19 @@ function readChain(
     }
   }
 
-  let active = readString(raw, "active", "");
-  if (!active) {
-    active = models[0] ?? "";
-  } else {
-    active = normalize(active);
-    if (!models.includes(active)) {
-      warnings.push(`当前模型 ${active} 不在模型列表里，已改为 ${models[0] ?? "（空）"}`);
-      active = models[0] ?? "";
+  // 旧版的 active 只作为迁移输入：把原来的起点挪到列表首位，之后不再写回 active。
+  const legacyActive = readString(raw, "active", "");
+  if (legacyActive) {
+    const active = normalize(legacyActive, false);
+    const position = models.indexOf(active);
+    if (position < 0) {
+      warnings.push(`chain.active 已废弃，已忽略不在模型列表里的 ${active}`);
+    } else {
+      if (position > 0) {
+        models.splice(position, 1);
+        models.unshift(active);
+      }
+      migrations.push(`chain.active 已废弃，已把 ${active} 移到列表首位`);
     }
   }
 
@@ -484,7 +485,6 @@ function readChain(
   }
 
   return {
-    active,
     models,
     context: readContext(raw, "chain", errors),
     retryDeadAfterMinutes: readNumber(

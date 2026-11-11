@@ -19,7 +19,7 @@ export function registerAdminRoutes(router: Router, runtime: Runtime): void {
         version: VERSION,
         uptimeSeconds: uptimeSeconds(runtime),
         bootedAt: runtime.bootedAt.toISOString(),
-        model: runtime.activeModel(),
+        model: runtime.primaryModel(),
         models: { total: chain.models.length, alive: chain.alive, dead: chain.dead },
         providers: { total: keys.length, configured: keys.filter((item) => item.configured).length },
       },
@@ -172,18 +172,6 @@ export function registerAdminRoutes(router: Router, runtime: Runtime): void {
     ctx.send(200, { ok: true, context: next });
   });
 
-  router.add("POST", "/api/chain/active", async (ctx) => {
-    const body = asObject(ctx);
-    const model = typeof body.model === "string" ? body.model.trim() : "";
-    if (!model) throw new HttpError(400, "model 不能为空");
-    const done = await guarded(ctx, async () => {
-      await runtime.setActiveModel(model);
-      return true;
-    });
-    if (!done) return;
-    ctx.send(200, { ok: true, active: runtime.activeModel() });
-  });
-
   router.add("POST", "/api/usage/reset", (ctx) => {
     runtime.resetUsage();
     ctx.send(200, { ok: true, stats: runtime.store.stats });
@@ -233,7 +221,7 @@ export function registerAdminRoutes(router: Router, runtime: Runtime): void {
     if (models.length === 0) throw new HttpError(400, "models 必须是非空数组");
     const done = await guarded(ctx, () => runtime.updateChainModels(models));
     if (done === null) return;
-    ctx.send(200, { ok: true, chain: { active: runtime.activeModel(), models: runtime.chainCodes() } });
+    ctx.send(200, { ok: true, chain: { models: runtime.chainCodes() } });
   });
 
   router.add("POST", "/api/chain/models", async (ctx) => {
@@ -244,7 +232,7 @@ export function registerAdminRoutes(router: Router, runtime: Runtime): void {
     if (!models.includes(code)) models.push(code);
     const done = await guarded(ctx, () => runtime.updateChainModels(models));
     if (done === null) return;
-    ctx.send(200, { ok: true, chain: { active: runtime.activeModel(), models: runtime.chainCodes() } });
+    ctx.send(200, { ok: true, chain: { models: runtime.chainCodes() } });
   });
 
   router.add("POST", "/api/chain/models/remove", async (ctx) => {
@@ -257,14 +245,14 @@ export function registerAdminRoutes(router: Router, runtime: Runtime): void {
     const current = runtime.chainCodes();
     const next = current.filter((code) => !remove.has(code));
     if (next.length === current.length) {
-      ctx.send(200, { ok: true, removed: 0, chain: { active: runtime.activeModel(), models: current } });
+      ctx.send(200, { ok: true, removed: 0, chain: { models: current } });
       return;
     }
     await runtime.updateChainModels(next);
     ctx.send(200, {
       ok: true,
       removed: current.length - next.length,
-      chain: { active: runtime.activeModel(), models: next },
+      chain: { models: next },
     });
   });
 
@@ -277,7 +265,7 @@ export function registerAdminRoutes(router: Router, runtime: Runtime): void {
       return;
     }
     await runtime.updateChainModels(next);
-    ctx.send(200, { ok: true, chain: { active: runtime.activeModel(), models: next } });
+    ctx.send(200, { ok: true, chain: { models: next } });
   });
 
   router.add("POST", "/api/catalog/refresh", async (ctx) => {
@@ -407,7 +395,7 @@ function buildOverview(runtime: Runtime): Record<string, unknown> {
     ),
     chain: runtime.chainSnapshot(),
     output: runtime.lastOutput(),
-    activeModel: runtime.activeModel(),
+    activeModel: runtime.primaryModel(),
     catalog: { fetchedAt: runtime.store.catalog.fetchedAt, models: catalog },
     events: runtime.events.recent(120),
     warnings: runtime.warnings,

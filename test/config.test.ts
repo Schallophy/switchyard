@@ -7,25 +7,33 @@ test("the shipped defaults validate cleanly", () => {
   assert.equal(result.ok, true);
   assert.equal(result.errors.length, 0);
   assert.deepEqual(result.config.chain.models, []);
-  assert.equal(result.config.chain.active, "");
+  assert.ok(!("active" in result.config.chain));
 });
 
-test("active defaults to the first model", () => {
-  const config = defaultConfig();
-  config.chain.models = ["dashscope/a", "dashscope/b"];
-  const result = normalizeConfig(config);
+test("a legacy active model is moved to the front", () => {
+  const raw = JSON.parse(JSON.stringify(defaultConfig())) as Record<string, any>;
+  raw.chain.models = ["dashscope/a", "dashscope/b", "dashscope/c"];
+  raw.chain.active = "dashscope/b";
+  const result = normalizeConfig(raw);
   assert.equal(result.ok, true);
-  assert.equal(result.config.chain.active, "dashscope/a");
+  assert.deepEqual(result.config.chain.models, ["dashscope/b", "dashscope/a", "dashscope/c"]);
+  assert.ok(!("active" in result.config.chain));
+  assert.ok(
+    result.migrations.some(
+      (item) => item.includes("chain.active 已废弃") && item.includes("dashscope/b"),
+    ),
+  );
 });
 
-test("an active model outside the list falls back to the first model", () => {
-  const config = defaultConfig();
-  config.chain.models = ["dashscope/a", "dashscope/b"];
-  config.chain.active = "dashscope/c";
-  const result = normalizeConfig(config);
+test("a legacy active model outside the list is ignored with a warning", () => {
+  const raw = JSON.parse(JSON.stringify(defaultConfig())) as Record<string, any>;
+  raw.chain.models = ["dashscope/a", "dashscope/b"];
+  raw.chain.active = "dashscope/c";
+  const result = normalizeConfig(raw);
   assert.equal(result.ok, true);
-  assert.equal(result.config.chain.active, "dashscope/a");
-  assert.ok(result.warnings.some((warning) => warning.includes("当前模型")));
+  assert.deepEqual(result.config.chain.models, ["dashscope/a", "dashscope/b"]);
+  assert.ok(!("active" in result.config.chain));
+  assert.ok(result.warnings.some((warning) => warning.includes("chain.active")));
 });
 
 test("invalid ports and urls are rejected", () => {
@@ -51,7 +59,6 @@ test("duplicate models inside the list are deduplicated", () => {
   config.chain.models = ["dashscope/a", "dashscope/a", "dashscope/b"];
   const result = normalizeConfig(config);
   assert.deepEqual(result.config.chain.models, ["dashscope/a", "dashscope/b"]);
-  assert.equal(result.config.chain.active, "dashscope/a");
 });
 
 test("a legacy chains[] config migrates to a single model list", () => {
@@ -64,7 +71,7 @@ test("a legacy chains[] config migrates to a single model list", () => {
   const result = normalizeConfig(raw);
   assert.equal(result.ok, true);
   assert.deepEqual(result.config.chain.models, ["dashscope/b", "dashscope/c"]);
-  assert.equal(result.config.chain.active, "dashscope/b");
+  assert.ok(!("active" in result.config.chain));
   assert.deepEqual(result.config.chain.context, { window: 128_000, onOverflow: "reject" });
   assert.ok(result.migrations.some((warning) => warning.includes("合并")));
 });
@@ -242,7 +249,7 @@ test("legacy modelProviders binds bare model codes to providers", () => {
   const result = normalizeConfig(raw);
   assert.equal(result.ok, true);
   assert.deepEqual(result.config.chain.models, ["dashscope/qwen3.8-27b"]);
-  assert.equal(result.config.chain.active, "dashscope/qwen3.8-27b");
+  assert.ok(!("active" in result.config.chain));
   assert.ok(!("modelProviders" in result.config));
   assert.ok(result.migrations.some((warning) => warning.includes("modelProviders")));
 

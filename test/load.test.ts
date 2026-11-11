@@ -59,7 +59,6 @@ test("saved config is strict json and round-trips", async () => {
   const dir = await mkdtemp(join(tmpdir(), "switchyard-config-"));
   const file = join(dir, "config.json");
   const config = defaultConfig();
-  config.chain.active = "dashscope/b";
   config.chain.models = ["dashscope/a", "dashscope/b"];
   config.chain.context = { window: 64_000, onOverflow: "passthrough" };
   config.server.maxBodyBytes = 1_048_576;
@@ -68,8 +67,9 @@ test("saved config is strict json and round-trips", async () => {
 
   const text = await readFile(file, "utf8");
   assert.doesNotThrow(() => JSON.parse(text));
+  const saved = JSON.parse(text) as Record<string, any>;
+  assert.ok(!("active" in saved.chain));
   const loaded = await loadConfig(file);
-  assert.equal(loaded.config.chain.active, "dashscope/b");
   assert.deepEqual(loaded.config.chain.models, ["dashscope/a", "dashscope/b"]);
   assert.deepEqual(loaded.config.chain.context, { window: 64_000, onOverflow: "passthrough" });
   assert.equal(loaded.config.server.maxBodyBytes, 1_048_576);
@@ -103,57 +103,65 @@ async function makeRuntime() {
   return { runtime, dir };
 }
 
-type SavedChain = { chain: { active: string; models: string[]; context: { window: number; onOverflow: string } } };
+type SavedChain = { chain: { models: string[]; context: { window: number; onOverflow: string } } };
 
-test("updating the model list dedupes and keeps active valid", async () => {
+test("updating the model list dedupes and persists the order", async () => {
   const { runtime, dir } = await makeRuntime();
   await runtime.updateChainModels(["dashscope/a", "dashscope/b", "dashscope/a"]);
 
   assert.deepEqual(runtime.chainCodes(), ["dashscope/a", "dashscope/b"]);
-  assert.equal(runtime.activeModel(), "dashscope/a");
+  assert.equal(runtime.primaryModel(), "dashscope/a");
 
-  const saved = JSON.parse(await readFile(join(dir, "config.json"), "utf8")) as SavedChain;
+  const saved = JSON.parse(await readFile(join(dir, "config.json"), "utf8")) as Record<string, any>;
   assert.deepEqual(saved.chain.models, ["dashscope/a", "dashscope/b"]);
-  assert.equal(saved.chain.active, "dashscope/a");
+  assert.ok(!("active" in saved.chain));
   await runtime.shutdown();
 });
 
-test("setting the active model persists and rejects unknown models", async () => {
-  const { runtime, dir } = await makeRuntime();
-  await runtime.updateChainModels(["dashscope/a", "dashscope/b"]);
-  await runtime.setActiveModel("dashscope/b");
-
-  assert.equal(runtime.activeModel(), "dashscope/b");
-  const saved = JSON.parse(await readFile(join(dir, "config.json"), "utf8")) as SavedChain;
-  assert.equal(saved.chain.active, "dashscope/b");
-
-  await assert.rejects(() => runtime.setActiveModel("nope"), /不在列表/);
-  await runtime.shutdown();
-});
-
-test("removing the active model falls back to the first model", async () => {
+test("auto always starts from the first model in the list", async () => {
   const { runtime } = await makeRuntime();
-  await runtime.updateChainModels(["dashscope/a", "dashscope/b", "dashscope/c"]);
-  await runtime.setActiveModel("dashscope/c");
   await runtime.updateChainModels(["dashscope/a", "dashscope/b"]);
 
-  assert.equal(runtime.activeModel(), "dashscope/a");
+  const calls: string[] = [];
+  runtime.client.attempt = async (_path, model) => {
+    calls.push(model);
+    return { ok: true, response: new Response("{}"), latencyMs: 1, providerId: "dashscope" };
+  };
+  const body = { messages: [{ role: "user", content: "hi" }] };
+
+  await runtime.requestThrough({ path: "chat/completions", model: "auto", body });
+  assert.deepEqual(calls, ["a"]);
+
+  await runtime.updateChainModels(["dashscope/b", "dashscope/a"]);
+  calls.length = 0;
+  await runtime.requestThrough({ path: "chat/completions", model: "auto", body });
+  assert.deepEqual(calls, ["b"], "重排后 auto 从新的第一个模型开始");
+
   await runtime.shutdown();
 });
 
-test("the effective model skips dead entries after the active one", async () => {
+test("removing the first model promotes the next one", async () => {
   const { runtime } = await makeRuntime();
   await runtime.updateChainModels(["dashscope/a", "dashscope/b", "dashscope/c"]);
-  await runtime.setActiveModel("dashscope/b");
-  assert.equal(runtime.effectiveModel(), "dashscope/b");
+  assert.equal(runtime.primaryModel(), "dashscope/a");
 
-  runtime.store.setHealth("dashscope/b", "dead", { reason: "额度已耗尽" });
-  assert.equal(runtime.effectiveModel(), "dashscope/c");
+  await runtime.updateChainModels(["dashscope/b", "dashscope/c"]);
+  assert.equal(runtime.primaryModel(), "dashscope/b");
+  await runtime.shutdown();
+});
 
-  runtime.store.setHealth("dashscope/c", "invalid", { reason: "模型不存在" });
+test("the effective model walks the list from the top, skipping unavailable entries", async () => {
+  const { runtime } = await makeRuntime();
+  await runtime.updateChainModels(["dashscope/a", "dashscope/b", "dashscope/c"]);
   assert.equal(runtime.effectiveModel(), "dashscope/a");
 
   runtime.store.setHealth("dashscope/a", "dead", { reason: "额度已耗尽" });
+  assert.equal(runtime.effectiveModel(), "dashscope/b");
+
+  runtime.store.setHealth("dashscope/b", "invalid", { reason: "模型不存在" });
+  assert.equal(runtime.effectiveModel(), "dashscope/c");
+
+  runtime.store.setHealth("dashscope/c", "dead", { reason: "额度已耗尽" });
   assert.equal(runtime.effectiveModel(), null);
 
   await runtime.shutdown();
@@ -168,7 +176,7 @@ test("the effective model skips models in cooldown", async () => {
     reason: "限流",
     throttledUntil: new Date(Date.now() + 60_000).toISOString(),
   });
-  assert.equal(runtime.effectiveModel(), "dashscope/b", "冷却中的首选让路");
+  assert.equal(runtime.effectiveModel(), "dashscope/b", "冷却中的第一个模型让路");
 
   const calls: string[] = [];
   runtime.client.attempt = async (_path, model) => {
@@ -180,7 +188,7 @@ test("the effective model skips models in cooldown", async () => {
   assert.equal(cooling.result.ok, true);
   assert.deepEqual(calls, ["b"], "auto 不会先打冷却中的模型");
 
-  // 冷却结束后自动重新入链，并回到首选位置
+  // 冷却结束后自动重新入链，并回到列表第一位
   runtime.store.setHealth("dashscope/a", "alive", {
     reason: null,
     throttledUntil: new Date(Date.now() - 1_000).toISOString(),
@@ -224,7 +232,7 @@ test("the current output follows the model that actually responded", async () =>
     body: { messages: [{ role: "user", content: "hi" }] },
   });
   assert.equal(auto.result.ok, true);
-  assert.equal(runtime.lastOutput()?.model, "dashscope/b", "记录真实承接的模型，而不是首选");
+  assert.equal(runtime.lastOutput()?.model, "dashscope/b", "记录真实承接的模型，而不是列表第一个");
   assert.equal(runtime.lastOutput()?.mode, "auto");
   assert.equal(runtime.lastOutput()?.requested, "auto");
   assert.equal(runtime.lastOutput()?.provider, "dashscope");
@@ -356,6 +364,7 @@ test("a strict-json legacy config is migrated and written back on load", async (
 
   const saved = JSON.parse(await readFile(file, "utf8")) as Record<string, any>;
   assert.deepEqual(saved.chain.models, ["dashscope/qwen3.8-27b"]);
+  assert.ok(!("active" in saved.chain));
   assert.ok(!("modelProviders" in saved));
 
   // 第二次启动不应再产生迁移提示

@@ -12,7 +12,7 @@ export function registerOpenAIRoutes(router: Router, runtime: Runtime): void {
   router.add("GET", "/v1/models", (ctx) => {
     const created = Math.floor(Date.now() / 1000);
     const chain = runtime.config.chain;
-    const active = runtime.activeModel();
+    const primary = runtime.primaryModel();
     const apisOf = (models: string[]): string[] => [...new Set(models.flatMap((code) => runtime.apisFor(code)))];
     const data: Array<Record<string, unknown>> = [
       {
@@ -20,11 +20,11 @@ export function registerOpenAIRoutes(router: Router, runtime: Runtime): void {
         object: "model",
         created,
         owned_by: "switchyard",
-        description: active ? `使用当前模型 ${active}，失败时按优先级回退` : "还没有选择模型",
+        description: primary ? "从列表第一个模型开始，失败时按优先级回退" : "模型列表为空",
         context_length: chain.context.window,
         apis: apisOf(chain.models),
-        provider: active ? runtime.providerIdFor(active) : runtime.config.defaultProvider,
-        active,
+        provider: primary ? runtime.providerIdFor(primary) : runtime.config.defaultProvider,
+        active: primary,
       },
     ];
 
@@ -40,7 +40,7 @@ export function registerOpenAIRoutes(router: Router, runtime: Runtime): void {
         apis: runtime.apisFor(code),
         provider: runtime.providerIdFor(code),
         upstream: runtime.upstreamModelFor(code),
-        active: code === active,
+        active: code === primary,
       });
     }
 

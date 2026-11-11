@@ -16,7 +16,7 @@ import {
   itemsPrefixHashes,
   responsesInputItems,
 } from "./core/responses-chain.ts";
-import { activeModel, isDeadRetryDue, resolveRoute, selectCandidates, type RouteMode } from "./core/selection.ts";
+import { isDeadRetryDue, resolveRoute, selectCandidates, type RouteMode } from "./core/selection.ts";
 import { StateStore } from "./store/state.ts";
 import type { AttemptRecord, AttemptOutcome, ModelRecord, NormalizedError, Usage } from "./types.ts";
 import { ProviderClient, resolveKeyInfo, resolveProvider, keyInfoFor, type KeyInfo } from "./provider/client.ts";
@@ -58,8 +58,7 @@ export interface RuntimeSnapshotModel extends ModelRecord {
 }
 
 export interface ChainSnapshot {
-  active: string | null;
-  /** auto 此刻实际会命中的模型：从 active 起第一个可用（不在冷却中，且非 dead/invalid 或已到自动重试时间）的模型。 */
+  /** auto 此刻实际会命中的模型：从列表第一个起，第一个可用（不在冷却中，且非 dead/invalid 或已到自动重试时间）的模型。 */
   effective: string | null;
   context: ChainConfig["context"];
   /** dead 模型多少分钟后自动重新参与选路；0 表示只能手动重置。 */
@@ -211,21 +210,17 @@ export class Runtime {
     return checkApi(this.config.modelApis, code, api);
   }
 
-  /** 当前用于输出的模型；active 失效时回退到列表第一个。 */
-  activeModel(): string | null {
-    return activeModel(this.config.chain);
+  /** 列表第一个模型，也就是 auto 的起点；列表为空时为 null。 */
+  primaryModel(): string | null {
+    return this.config.chain.models[0] ?? null;
   }
 
-  /** auto 此刻实际会命中的模型：从 active 起按列表顺序找第一个可用（冷却中、失效、无效的除外）的模型。 */
+  /** auto 此刻实际会命中的模型：按列表顺序找第一个可用（冷却中、失效、无效的除外）的模型。 */
   effectiveModel(): string | null {
     const codes = this.chainCodes();
-    if (codes.length === 0) return null;
-    const active = this.activeModel();
-    const start = active ? Math.max(0, codes.indexOf(active)) : 0;
     const retryMs = this.config.chain.retryDeadAfterMinutes * 60_000;
     const now = Date.now();
-    for (let offset = 0; offset < codes.length; offset += 1) {
-      const code = codes[(start + offset) % codes.length];
+    for (const code of codes) {
       const record = this.store.get(code);
       const health = record?.health ?? "unknown";
       if (health === "invalid") continue;
@@ -282,7 +277,6 @@ export class Runtime {
     const chain = this.config.chain;
     const models = chain.models.map((code) => this.snapshotModel(code));
     return {
-      active: activeModel(chain),
       effective: this.effectiveModel(),
       context: chain.context,
       retryDeadAfterMinutes: chain.retryDeadAfterMinutes,
@@ -442,7 +436,6 @@ export class Runtime {
         chain,
         getRecord: (code) => this.store.get(code),
         now: Date.now(),
-        start: route.model,
         accepts: (code) => this.supportsApi(code, api),
         retryDeadAfterMs: chain.retryDeadAfterMinutes * 60_000,
       }).map((candidate) => candidate.code);
@@ -706,7 +699,7 @@ export class Runtime {
   }
 
   async test(prompt: string): Promise<TestResult> {
-    if (!this.activeModel()) {
+    if (!this.primaryModel()) {
       return {
         ok: false,
         model: null,
@@ -770,7 +763,6 @@ export class Runtime {
     const added = next.filter((code) => !previous.includes(code));
     const removed = previous.filter((code) => !next.includes(code));
     chain.models = next;
-    if (!next.includes(chain.active)) chain.active = next[0] ?? "";
     this.store.ensure(next);
     this.store.pruneModels(next);
     await saveConfig(this.configPath, this.config);
@@ -783,16 +775,6 @@ export class Runtime {
             ? `模型列表已更新（加入 ${added.length} 个，移除 ${removed.length} 个）`
             : "模型列表顺序已更新";
     this.events.push({ kind: "config", level: "info", message });
-  }
-
-  async setActiveModel(code: string): Promise<void> {
-    const model = code.trim();
-    if (!this.config.chain.models.includes(model)) {
-      throw new ConfigRuleError(`模型不在列表里：${model}`);
-    }
-    if (this.config.chain.active === model) return;
-    this.config.chain.active = model;
-    await this.#persistConfig(`当前模型已切换为 ${model}`);
   }
 
   async updateChainContext(patch: Partial<ContextConfig>): Promise<ContextConfig> {
@@ -890,7 +872,7 @@ export class Runtime {
     this.events.push({
       kind: "start",
       level: "info",
-      message: `Switchyard 已启动，${this.chainCodes().length} 个模型 / ${this.config.providers.length} 个提供商 · 当前 ${this.activeModel() ?? "未选择"}`,
+      message: `Switchyard 已启动，${this.chainCodes().length} 个模型 / ${this.config.providers.length} 个提供商 · 当前 ${this.primaryModel() ?? "未选择"}`,
       detail: { providers: this.config.providers.map((provider) => provider.id) },
     });
 

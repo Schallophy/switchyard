@@ -4,7 +4,7 @@ import { isThrottled } from "./meter.ts";
 import { splitModelCode } from "./model-code.ts";
 
 /**
- * - auto：从首选模型开始，失败后按模型列表的顺序回退
+ * - auto：从列表第一个模型开始，失败后按列表顺序回退
  * - direct：客户端点名了列表里的模型，直接发给它，不做回退
  * - passthrough：列表里没有这个模型，原样透传
  */
@@ -12,13 +12,8 @@ export type RouteMode = "auto" | "direct" | "passthrough";
 
 export interface RouteResolution {
   mode: RouteMode;
-  /** auto 时是当前选中的模型，direct / passthrough 时是客户端点名的模型。 */
+  /** auto 时是列表第一个模型，direct / passthrough 时是客户端点名的模型。 */
   model: string | null;
-}
-
-export function activeModel(chain: ChainConfig): string | null {
-  if (chain.active && chain.models.includes(chain.active)) return chain.active;
-  return chain.models[0] ?? null;
 }
 
 export function resolveRoute(
@@ -28,7 +23,7 @@ export function resolveRoute(
 ): RouteResolution {
   const requested = (model ?? "").trim();
   if (requested === "" || requested === "auto") {
-    return { mode: "auto", model: activeModel(chain) };
+    return { mode: "auto", model: chain.models[0] ?? null };
   }
   if (chain.models.includes(requested)) {
     return { mode: "direct", model: requested };
@@ -50,8 +45,6 @@ export interface SelectionInput {
   chain: ChainConfig;
   getRecord: (code: string) => ModelRecord | undefined;
   now: number;
-  /** 从这个模型开始回退（通常是首选模型）；不在列表里时按原顺序。 */
-  start?: string | null;
   accepts?: (code: string) => boolean;
   /** dead 模型经过多少毫秒后重新参与选路；0 或省略表示不自动重试。 */
   retryDeadAfterMs?: number;
@@ -69,7 +62,7 @@ export function selectCandidates(input: SelectionInput): Candidate[] {
   const candidates: Candidate[] = [];
   const retryMs = input.retryDeadAfterMs ?? 0;
 
-  for (const code of rotateFrom(input.chain.models, input.start)) {
+  for (const code of input.chain.models) {
     const record = input.getRecord(code);
     if (!record) continue;
     if (input.accepts && !input.accepts(code)) continue;
@@ -81,12 +74,4 @@ export function selectCandidates(input: SelectionInput): Candidate[] {
   }
 
   return candidates;
-}
-
-/** 从 start 起把列表轮转一圈；start 不在列表里时保持原顺序。 */
-function rotateFrom(models: string[], start?: string | null): string[] {
-  if (!start) return models;
-  const position = models.indexOf(start);
-  if (position <= 0) return models;
-  return [...models.slice(position), ...models.slice(0, position)];
 }

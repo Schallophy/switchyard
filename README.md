@@ -1,13 +1,13 @@
 # Switchyard
 
-一个 OpenAI 兼容的本地网关：把多个提供商模型编成一条**优先级列表**，并从中选出一个首选模型作为 auto 的起点。当当前模型因免费额度耗尽、失效、限流或无权限而无法服务时，网关在用户无感知的情况下切换到列表中的下一个模型。
+一个 OpenAI 兼容的本地网关：把多个提供商模型编成一条**优先级列表**，列表第一项就是 auto 的起点。当当前模型因免费额度耗尽、失效、限流或无权限而无法服务时，网关在用户无感知的情况下切换到列表中的下一个模型。
 
 Switchyard 不绑定任何厂商。默认提供商是阿里云百炼（DashScope）的兼容模式，但任何遵循 OpenAI 协议的端点都可以接入；"免费额度用完即停"只是它识别的一类失败信号，而不是产品定位。
 
 ## 特性
 
 - **透明故障转移**：非流式与 SSE 流式请求都支持，响应头 `x-switchyard-model` / `x-switchyard-failovers` 告知实际使用的模型与切换次数。
-- **单条模型列表**：所有候选模型放在一个列表里，拖动调整优先级；在列表里选一个作为首选模型，额度耗尽时按顺序自动切到下一个。支持多选、全选与批量移出。
+- **单条模型列表**：所有候选模型放在一个列表里，拖动调整优先级；列表第一项就是 auto 的起点，额度耗尽时按顺序自动切到下一个。支持多选、全选与批量移出。
 - **免费额度优先**：把免费模型排在列表前面，额度耗尽（403）标记失效后自动转付费模型；失效模型在 `chain.retryDeadAfterMinutes`（默认 1 天）后自动重新参与选路，额度刷新当天又会从免费模型开始试，无需手动重置。
 - **按能力选路**：每个模型可声明 `chat` / `responses` / `completions` / `embeddings` 能力；`/v1/chat/completions` 只在 chat 模型中选，`/v1/responses` 只在 responses 模型中选，不做协议转译。
 - **上下文保护**：模型列表共用一个上下文窗口（默认 256K），超出时默认在转发前返回 400，避免把注定失败的请求送到提供商。
@@ -38,7 +38,7 @@ cp .env.example .env       # 1. 填 DASHSCOPE_API_KEY=sk-...
                            # 2. 或在看板「设置 → 提供商」里填
 ```
 
-保存 provider 后默认**不会自动拉取目录**：到看板「模型」页点「添加模型」，先点「刷新目录」拉取上游模型列表，再在面板里按提供商或关键词筛选、勾选加入。也可以直接编辑 `config.json` 的 `chain.models`。把模型加入列表并选一个首选模型后，`model: "auto"` 立即可用。新模型出现在目录里也不会自动加入，需要手动挑选。
+保存 provider 后默认**不会自动拉取目录**：到看板「模型」页点「添加模型」，先点「刷新目录」拉取上游模型列表，再在面板里按提供商或关键词筛选、勾选加入。也可以直接编辑 `config.json` 的 `chain.models`。把模型加入列表后，第一个模型就是 auto 的起点，`model: "auto"` 立即可用。新模型出现在目录里也不会自动加入，需要手动挑选。
 
 首次启动会在当前目录生成 `config.json`，然后：
 
@@ -105,7 +105,6 @@ Key 不是启动的硬性条件：进程、看板、`/v1/models` 都不需要它
 ],
 "defaultProvider": "dashscope",
 "chain": {
-  "active": "dashscope/qwen3.8-27b",
   "models": ["dashscope/qwen3.8-27b", "openai/gpt-4o-mini"]
 }
 ```
@@ -151,7 +150,7 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 
 | 值 | 含义 |
 | --- | --- |
-| `auto` | 使用首选模型（`chain.active`），失败后按列表顺序回退 |
+| `auto` | 从列表第一个模型开始，失败后按列表顺序回退 |
 | 列表里的模型（如 `qwen3.8-27b`） | 只发给这个模型，不做故障转移 |
 | 未登记的其他模型 | 原样透传，不做故障转移 |
 
@@ -172,12 +171,12 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 
 ### 选路
 
-1. 解析 `model`：`auto` 从首选模型（`chain.active`）开始；点名列表里的模型则只发给它；其他模型原样透传。
+1. 解析 `model`：`auto` 从列表第一个模型开始；点名列表里的模型则只发给它；其他模型原样透传。
 2. `auto` 时按当前请求端点过滤：只保留在 `modelApis` 中声明了对应能力的模型。
-3. 从首选模型起把列表轮转一圈，再过滤掉 `invalid`、尚未到重试时间的 `dead`（失效时间超过 `chain.retryDeadAfterMinutes` 后重新参与选路）以及仍在限流冷却中的模型。
-4. 剩余模型按轮转后的顺序依次尝试，每次尝试最多 `failover.maxAttempts` 次；点名模型只尝试一次。冷却到期的模型会自动重新入链。
+3. 按列表顺序过滤掉 `invalid`、尚未到重试时间的 `dead`（失效时间超过 `chain.retryDeadAfterMinutes` 后重新参与选路）以及仍在限流冷却中的模型。
+4. 剩余模型按列表顺序依次尝试，每次尝试最多 `failover.maxAttempts` 次；点名模型只尝试一次。冷却到期的模型会自动重新入链。
 
-**怎么看当前实际在用哪个模型**：看板「模型」页的「当前输出」实时跟随最近一次真正产出响应的模型——包括 auto 故障转移后实际承接的模型，以及直连或透传请求点名的模型；还没有请求时（或重启后）显示 `chain.effective`，即 auto 此刻会命中的模型。如果最近输出和下一次 auto 的目标不同，标题下方会注明「auto 下一站 X」。`chain.active` 只决定 auto 的起点，暂时不可用（包括冷却中）时 `effective` 会顺延，并注明「首选 X 暂不可用，恢复后自动切回」。事件流里的「切换」事件记录 `qwen3.8-flash（额度耗尽）→ qwen3.8-27b（切换 1 次）` 这样的明细。API 侧另有响应头 `x-switchyard-model` / `x-switchyard-provider` / `x-switchyard-failovers`。
+**怎么看当前实际在用哪个模型**：看板「模型」页的「当前输出」实时跟随最近一次真正产出响应的模型——包括 auto 故障转移后实际承接的模型，以及直连或透传请求点名的模型；还没有请求时（或重启后）显示 `chain.effective`，即 auto 此刻会命中的模型。如果最近输出和下一次 auto 的目标不同，标题下方会注明「auto 下一站 X」。列表第一个模型暂时不可用（包括冷却中）时，`effective` 会顺延到下一个可用模型，冷却结束后自动回到第一位。事件流里的「切换」事件记录 `qwen3.8-flash（额度耗尽）→ qwen3.8-27b（切换 1 次）` 这样的明细。API 侧另有响应头 `x-switchyard-model` / `x-switchyard-provider` / `x-switchyard-failovers`。
 
 ### API 能力
 
@@ -262,9 +261,8 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
     "maxFiles": 3               // 保留 switchyard.log.1 … .3
   },
   "chain": {
-    "active": "dashscope/qwen3.8-27b",       // 首选模型（auto 起点），必须在 models 里
     "models": [
-      "dashscope/qwen3.8-27b",               // 顺序即优先级，auto 从 active 开始回退
+      "dashscope/qwen3.8-27b",               // 顺序即优先级，第一项就是 auto 起点
       "dashscope/kimi-k3.1-pro",
       "dashscope/qwen3.8-max-0902"
     ],
@@ -324,8 +322,7 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 | `log.file` | 日志文件路径，留空为 `<数据目录>/switchyard.log` |
 | `log.maxBytes` | 单个日志文件上限（字节），默认 `2097152`（2 MB）；`0` 表示不轮转 |
 | `log.maxFiles` | 轮转后保留的旧文件数（`.1` … `.N`），默认 `3`；`0` 表示只保留当前文件 |
-| `chain.active` | 首选模型（`提供商/模型名`），也就是 `auto` 的起点；必须在 `chain.models` 里，否则回落到第一个模型 |
-| `chain.models` | 候选模型列表，顺序即优先级；每项都绑定提供商，写成 `提供商/模型名` |
+| `chain.models` | 候选模型列表，顺序即优先级；第一项就是 `auto` 的起点，每项都绑定提供商，写成 `提供商/模型名` |
 | `chain.context.window` | 模型列表共用的上下文窗口，默认 `256000` |
 | `chain.context.onOverflow` | `reject`（默认，超限返回 400）或 `passthrough`（交给提供商） |
 | `chain.retryDeadAfterMinutes` | `dead` 模型自动重新参与选路的间隔（分钟），默认 `1440`（1 天）；`0` 表示只能手动重置。`invalid` 模型不会自动重试 |
@@ -342,6 +339,8 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 | `responsesChaining.enabled` | 开启后 `/v1/responses` 会复用提供商的会话状态，只发送新增内容；默认关闭 |
 | `responsesChaining.ttlMinutes` | response id 的保留时间（分钟），默认 `120` |
 | `responsesChaining.maxSessions` | 内存中最多保留多少个会话前缀，默认 `500` |
+
+旧版配置里的 `chain.active` 已废弃：加载时会自动把它移到 `chain.models` 首位（例如 `models=[a,b,c]`、`active=b` 会变成 `[b,a,c]`）并输出一条迁移提示；不在列表里的 `active` 会被忽略。之后保存配置不再写入 `active`。
 
 ### 环境变量
 
@@ -395,7 +394,7 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 
 | 页面 | 内容 |
 | --- | --- |
-| 模型 | 当前输出与状态、请求/切换/Token 统计、路由轨道（拖动或 `Alt+↑/↓` 调整优先级）、设为首选、重置状态、编辑 API 能力、批量移出、添加模型面板（悬浮居中，按提供商与关键词筛选全部目录模型，已加入的显示为禁用、刷新目录）、发送测试、链路策略摘要与最近事件 |
+| 模型 | 当前输出与状态、请求/切换/Token 统计、路由轨道（拖动或 `Alt+↑/↓` 调整优先级）、置顶、重置状态、编辑 API 能力、批量移出、添加模型面板（悬浮居中，按提供商与关键词筛选全部目录模型，已加入的显示为禁用、刷新目录）、发送测试、链路策略摘要与最近事件 |
 | 排行 | 按 Artificial Analysis 的 Intelligence Index 排序目录模型；多选后可只看已选并按能力从高到低排列，逐行添加；评分与勾选只在内存中，不写入配置 |
 | 用量 | 按调用方 API Key 汇总请求、失败、切换、真实输入/输出 Token、缓存命中率与按配置单价估算的成本，可分别排序并展开明细 |
 | 输出 | 实时查看最近经过网关的模型输出，每条标出实际承接的模型、提供商、协议（Chat / Completions / Responses / Embeddings）、流式与否、耗时与用量；只存在内存里，重启进程即清空 |
@@ -420,8 +419,7 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 | `GET` | `/api/config` | 读取配置：`text`（脱敏 JSON 文本）、`config`（结构化对象，`apiKey` 置空）、`apiKeySet`、Key 状态与路径 |
 | `PUT` | `/api/config` | 保存配置：`{"config":{...}}` 按对象合并保存，或 `{"text":"{...}"}` 走文本（接受注释）；`apiKey` 留空表示保持原值 |
 | `PATCH` | `/api/chain` | 更新上下文：`{"context":{"window":256000,"onOverflow":"reject"}}` |
-| `POST` | `/api/chain/active` | 设置首选模型（auto 起点）：`{"model":"qwen3.8-27b"}` |
-| `POST` | `/api/chain/order` | 重排模型列表：`{"models":[...]}` |
+| `POST` | `/api/chain/order` | 重排模型列表（「置顶」也用它）：`{"models":[...]}` |
 | `POST` | `/api/chain/models` | 添加模型：`{"code":"dashscope/qwen3.8-27b"}`，必须带提供商标识 |
 | `DELETE` | `/api/chain/models/:code` | 从列表移出模型 |
 | `POST` | `/api/chain/models/remove` | 批量移出：`{"models":["a","b"]}`，返回 `removed` 与实际条数；一次落盘 |

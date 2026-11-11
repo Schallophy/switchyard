@@ -7,7 +7,6 @@ import type { ChainConfig } from "../src/config/schema.ts";
 const providers = [{ id: "qianwenai" }, { id: "dashscope" }];
 
 const chain: ChainConfig = {
-  active: "qianwenai/vanchin/deepseek-v4.1-flash-1017",
   models: ["qianwenai/vanchin/deepseek-v4.1-flash-1017", "dashscope/qwen3.8-max"],
   context: { window: 100_000, onOverflow: "reject" },
   retryDeadAfterMinutes: 1_440,
@@ -52,7 +51,7 @@ test("an ambiguous bare model name falls through to passthrough", () => {
   });
 });
 
-test("full codes route directly and auto picks the active model", () => {
+test("full codes route directly and auto picks the first model", () => {
   assert.deepEqual(resolveRoute("dashscope/qwen3.8-max", chain, providers), {
     mode: "direct",
     model: "dashscope/qwen3.8-max",

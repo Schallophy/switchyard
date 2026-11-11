@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DEFAULT_CONTEXT_WINDOW, type ChainConfig } from "../src/config/schema.ts";
-import { activeModel, resolveRoute, selectCandidates } from "../src/core/selection.ts";
+import { resolveRoute, selectCandidates } from "../src/core/selection.ts";
 import type { ModelRecord } from "../src/types.ts";
 
-function chain(models: string[], active = models[0] ?? ""): ChainConfig {
+function chain(models: string[]): ChainConfig {
   return {
-    active,
     models,
     context: { window: DEFAULT_CONTEXT_WINDOW, onOverflow: "reject" },
     retryDeadAfterMinutes: 0,
@@ -39,46 +38,40 @@ function record(code: string, patch: Partial<ModelRecord> = {}): ModelRecord {
 function pick(
   models: string[],
   records: Record<string, ModelRecord>,
-  options: { start?: string | null; now?: number; retryDeadAfterMs?: number } = {},
+  options: { now?: number; retryDeadAfterMs?: number } = {},
 ): string[] {
   return selectCandidates({
     chain: chain(models),
     getRecord: (code) => records[code],
     now: options.now ?? Date.now(),
-    start: options.start,
     retryDeadAfterMs: options.retryDeadAfterMs,
   }).map((candidate) => candidate.code);
 }
 
-test("activeModel returns the selected model", () => {
-  assert.equal(activeModel(chain(["a", "b", "c"], "b")), "b");
-});
-
-test("activeModel falls back to the first model when active is invalid", () => {
-  assert.equal(activeModel(chain(["a", "b"], "nope")), "a");
-  assert.equal(activeModel(chain([])), null);
-});
-
-test("auto resolves to the active model", () => {
-  const resolution = resolveRoute("auto", chain(["a", "b", "c"], "b"));
+test("auto resolves to the first model in the list", () => {
+  const resolution = resolveRoute("auto", chain(["a", "b", "c"]));
   assert.equal(resolution.mode, "auto");
-  assert.equal(resolution.model, "b");
+  assert.equal(resolution.model, "a");
 });
 
 test("an empty model name is treated as auto", () => {
-  const resolution = resolveRoute(undefined, chain(["a", "b"], "b"));
+  const resolution = resolveRoute(undefined, chain(["a", "b"]));
   assert.equal(resolution.mode, "auto");
-  assert.equal(resolution.model, "b");
+  assert.equal(resolution.model, "a");
+});
+
+test("auto resolves to null when the list is empty", () => {
+  assert.equal(resolveRoute("auto", chain([])).model, null);
 });
 
 test("a model in the list is resolved as a direct target", () => {
-  const resolution = resolveRoute("c", chain(["a", "b", "c"], "b"));
+  const resolution = resolveRoute("c", chain(["a", "b", "c"]));
   assert.equal(resolution.mode, "direct");
   assert.equal(resolution.model, "c");
 });
 
 test("unknown models pass through untouched", () => {
-  const resolution = resolveRoute("some-external-model", chain(["a", "b"], "b"));
+  const resolution = resolveRoute("some-external-model", chain(["a", "b"]));
   assert.equal(resolution.mode, "passthrough");
   assert.equal(resolution.model, "some-external-model");
 });
@@ -122,21 +115,20 @@ test("throttled models leave the chain until the cooldown ends", () => {
     b: record("b"),
     c: record("c"),
   };
-  // 冷却中的首选模型让路，不再出现在候选里
-  assert.deepEqual(pick(["a", "b", "c"], records, { now, start: "a" }), ["b", "c"]);
+  // 冷却中的列表第一个模型让路，不再出现在候选里
   assert.deepEqual(pick(["a", "b", "c"], records, { now }), ["b", "c"]);
   // 冷却到期后自动回到链首
-  assert.deepEqual(pick(["a", "b", "c"], records, { now: now + 60_001, start: "a" }), ["a", "b", "c"]);
+  assert.deepEqual(pick(["a", "b", "c"], records, { now: now + 60_001 }), ["a", "b", "c"]);
 });
 
-test("starting from a model rotates the list from that point", () => {
+test("candidates keep the list order", () => {
   const records = { a: record("a"), b: record("b"), c: record("c") };
-  assert.deepEqual(pick(["a", "b", "c"], records, { start: "b" }), ["b", "c", "a"]);
+  assert.deepEqual(pick(["c", "a", "b"], records), ["c", "a", "b"]);
 });
 
-test("starting from a dead model begins at the next usable model", () => {
-  const records = { a: record("a"), b: record("b", { health: "dead" }), c: record("c") };
-  assert.deepEqual(pick(["a", "b", "c"], records, { start: "b" }), ["c", "a"]);
+test("a dead first model yields to the next one", () => {
+  const records = { a: record("a", { health: "dead" }), b: record("b"), c: record("c") };
+  assert.deepEqual(pick(["a", "b", "c"], records), ["b", "c"]);
 });
 
 test("an empty list yields no candidates", () => {

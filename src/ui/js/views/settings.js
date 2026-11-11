@@ -614,7 +614,7 @@ function failoverPanel() {
     <section class="group">
       <div class="group-head">
         <h2>故障转移</h2>
-        <p>auto 从 active 开始按列表顺序回退。失效的模型经过重试时间后会重新参与选路；无效模型不会自动恢复。</p>
+        <p>auto 从列表第一个模型开始按顺序回退。失效的模型经过重试时间后会重新参与选路；无效模型不会自动恢复。</p>
       </div>
       <div class="fields">
         <div class="field">

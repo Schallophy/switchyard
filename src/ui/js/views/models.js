@@ -186,11 +186,6 @@ function outputMainHtml(data) {
       `<p class="output-note subtle">auto 下一站：<code>${esc(chain.effective)}</code></p>`,
     );
   }
-  if (chain.active && chain.effective && chain.active !== chain.effective) {
-    notes.push(
-      `<p class="output-note">首选 ${esc(chain.active)} 暂不可用，恢复后自动切回</p>`,
-    );
-  }
 
   return `
     <div class="output-label" id="output-label" title="最近一次实际产出响应的模型；还没有输出时显示 auto 将命中的模型">当前输出</div>
@@ -427,7 +422,6 @@ function emptyHtml() {
 
 function railSignature(data) {
   return [
-    data.chain.active,
     data.chain.effective,
     data.output?.model || "",
     local.batch ? "1" : "0",
@@ -627,12 +621,13 @@ function openRowMenu(anchor, code, ctx) {
     model.health === "invalid" ||
     Boolean(model.throttledUntil)
   );
+  const topDisabled = data.chain.models[0]?.code === code;
 
   openMenu(anchor, [
     {
-      label: "设为首选",
-      disabled: data.chain.active === code,
-      action: () => setActive(code, ctx),
+      label: "置顶",
+      disabled: topDisabled,
+      action: () => moveToTop(code, ctx),
     },
     {
       label: "重置状态",
@@ -645,13 +640,16 @@ function openRowMenu(anchor, code, ctx) {
   ]);
 }
 
-async function setActive(code, ctx) {
+async function moveToTop(code, ctx) {
+  const models = store.data?.chain.models.map((model) => model.code) ?? [];
+  if (!models.includes(code)) return;
+  const next = [code, ...models.filter((item) => item !== code)];
   try {
-    await api.post("/api/chain/active", { model: code });
-    toast(`首选已设为 ${code}；auto 会从它开始`, "ok");
+    await api.post("/api/chain/order", { models: next });
+    toast(`已把 ${code} 置顶；auto 会从它开始`, "ok");
     await ctx.refresh();
   } catch (error) {
-    toast(error.message, "bad", "设置失败");
+    toast(error.message, "bad", "置顶失败");
   }
 }
 
@@ -876,7 +874,9 @@ function openDetail(code, ctx) {
       .join("")}</dl>${error}`,
     footer: `
       <button class="btn" type="button" data-act="revive">重置状态</button>
-      <button class="btn" type="button" data-act="active">设为首选</button>
+      <button class="btn" type="button" data-act="top" ${
+        data.chain.models[0]?.code === code ? "disabled" : ""
+      }>置顶</button>
       <button class="btn danger" type="button" data-act="remove">移出列表</button>
     `,
     onMount(node) {
@@ -884,9 +884,9 @@ function openDetail(code, ctx) {
         node.close();
         revive(code, ctx);
       });
-      node.querySelector('[data-act="active"]').addEventListener("click", () => {
+      node.querySelector('[data-act="top"]').addEventListener("click", () => {
         node.close();
-        setActive(code, ctx);
+        moveToTop(code, ctx);
       });
       node.querySelector('[data-act="remove"]').addEventListener("click", () => {
         node.close();
@@ -1156,7 +1156,7 @@ function openTest(ctx) {
       <div class="test-result" id="test-result">${testResultHtml(local.test)}</div>
     `,
     footer: `
-      <span class="dialog-note">从首选模型开始，失败时按列表回退</span>
+      <span class="dialog-note">从列表第一个模型开始，失败时按列表回退</span>
       <button class="btn primary" type="button" data-act="run">发送</button>
     `,
     onMount(node) {
