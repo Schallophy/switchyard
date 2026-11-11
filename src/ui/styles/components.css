@@ -558,35 +558,47 @@ dialog::backdrop {
   border-top: 1px solid var(--rule-soft);
 }
 
-dialog.sheet {
-  position: fixed;
-  inset: 0 0 0 auto;
+/* 添加模型：悬浮居中的大面板 */
+dialog.add-dialog {
   display: flex;
   flex-direction: column;
-  width: min(480px, 100vw);
-  max-width: 100vw;
-  height: 100dvh;
-  max-height: 100dvh;
-  margin: 0;
-  border-width: 0 0 0 1px;
-  border-radius: 0;
-  animation: sheet-in 160ms var(--ease);
+  width: min(760px, calc(100vw - 32px));
+  max-width: min(760px, calc(100vw - 32px));
+  height: min(80dvh, 820px);
+  max-height: min(88dvh, 860px);
+  animation: dialog-in 160ms var(--ease);
 }
 
-dialog.sheet .dialog-body {
+dialog.add-dialog .dialog-body {
+  display: flex;
   flex: 1;
+  flex-direction: column;
+  min-height: 0;
   max-height: none;
   padding: 0;
 }
 
-dialog.sheet .dialog-head,
-dialog.sheet .dialog-foot {
+dialog.add-dialog #catalog-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+dialog.add-dialog .dialog-head,
+dialog.add-dialog .dialog-foot,
+dialog.add-dialog .sheet-tools,
+dialog.add-dialog .manual-add {
   flex-shrink: 0;
 }
 
-@keyframes sheet-in {
+dialog.add-dialog .manual-add {
+  margin: 0;
+  padding: 12px 20px 16px;
+}
+
+@keyframes dialog-in {
   from {
-    transform: translateX(24px);
+    transform: translateY(8px) scale(0.99);
     opacity: 0.6;
   }
   to {

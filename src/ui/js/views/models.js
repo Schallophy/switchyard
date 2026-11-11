@@ -911,18 +911,23 @@ function openApis(code, ctx) {
 /* ---------- add model sheet ---------- */
 
 function openAddSheet(ctx) {
-  local.add = { query: "", filter: "untracked", selected: new Set() };
+  local.add = { query: "", filter: "untracked", provider: "", selected: new Set() };
 
   const dialog = openDialog({
     title: "添加模型",
-    className: "sheet",
+    className: "add-dialog",
     body: `
       <div class="sheet-tools">
         <input class="input" id="add-query" type="search" placeholder="搜索模型 code 或厂商" autocomplete="off">
-        <div class="chips" id="add-filters">
-          <button class="chip" type="button" data-filter="untracked" aria-pressed="true">未加入</button>
-          <button class="chip" type="button" data-filter="all" aria-pressed="false">全部</button>
-          <button class="chip" type="button" data-filter="alive" aria-pressed="false">可用</button>
+        <div class="add-filters">
+          <div class="chips" id="add-filters">
+            <button class="chip" type="button" data-filter="untracked" aria-pressed="true">未加入</button>
+            <button class="chip" type="button" data-filter="all" aria-pressed="false">全部</button>
+            <button class="chip" type="button" data-filter="alive" aria-pressed="false">可用</button>
+          </div>
+          <select class="select add-provider" id="add-provider" aria-label="按提供商筛选">
+            ${catalogProviderOptions()}
+          </select>
         </div>
       </div>
       <div id="catalog-wrap">${catalogInner()}</div>
@@ -945,6 +950,30 @@ function openAddSheet(ctx) {
   return dialog;
 }
 
+function catalogProviderOptions() {
+  const data = store.data;
+  const entries = data?.catalog?.models || [];
+  const counts = new Map();
+  for (const entry of entries) {
+    if (!entry.provider) continue;
+    counts.set(entry.provider, (counts.get(entry.provider) || 0) + 1);
+  }
+
+  const ids = (data?.providers || []).map((provider) => provider.id).filter((id) => counts.has(id));
+  for (const id of counts.keys()) if (!ids.includes(id)) ids.push(id);
+
+  const option = (value, label) =>
+    `<option value="${esc(value)}" ${value === local.add.provider ? "selected" : ""}>${esc(label)}</option>`;
+
+  return [
+    option("", "全部提供商"),
+    ...ids.map((id) => {
+      const provider = data?.providers?.find((item) => item.id === id);
+      return option(id, `${provider?.label || id}（${counts.get(id)}）`);
+    }),
+  ].join("");
+}
+
 function filteredCatalog() {
   const entries = store.data?.catalog?.models || [];
   const query = local.add.query.trim().toLowerCase();
@@ -952,6 +981,7 @@ function filteredCatalog() {
   return entries.filter((entry) => {
     if (local.add.filter === "untracked" && entry.tracked) return false;
     if (local.add.filter === "alive" && entry.health !== "alive") return false;
+    if (local.add.provider && entry.provider !== local.add.provider) return false;
     if (query) {
       const haystack = `${entry.code} ${entry.upstream || ""} ${entry.family || ""} ${entry.provider || ""}`.toLowerCase();
       if (!haystack.includes(query)) return false;
@@ -1025,6 +1055,7 @@ function addFootHtml() {
 function bindAdd(node, ctx) {
   const query = node.querySelector("#add-query");
   const filters = node.querySelector("#add-filters");
+  const providerFilter = node.querySelector("#add-provider");
   const wrap = node.querySelector("#catalog-wrap");
   const foot = node.querySelector("#add-foot");
   const manual = node.querySelector("#manual-code");
@@ -1035,6 +1066,9 @@ function bindAdd(node, ctx) {
   };
   const rerenderFoot = () => {
     foot.innerHTML = addFootHtml();
+  };
+  const rerenderProviderFilter = () => {
+    if (providerFilter) providerFilter.innerHTML = catalogProviderOptions();
   };
 
   query.addEventListener("input", () => {
@@ -1049,6 +1083,12 @@ function bindAdd(node, ctx) {
     for (const item of filters.querySelectorAll("[data-filter]")) {
       item.setAttribute("aria-pressed", String(item === chip));
     }
+    rerenderList();
+  });
+
+  providerFilter?.addEventListener("change", () => {
+    local.add.provider = providerFilter.value;
+    if (providerFilter.value && manualProvider) manualProvider.value = providerFilter.value;
     rerenderList();
   });
 
@@ -1107,6 +1147,7 @@ function bindAdd(node, ctx) {
         const result = await api.post("/api/catalog/refresh");
         toast(`目录已刷新，共 ${result.count ?? 0} 个模型`, "ok");
         await ctx.refresh();
+        rerenderProviderFilter();
         rerenderList();
         rerenderFoot();
       } catch (error) {

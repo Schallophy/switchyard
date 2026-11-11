@@ -861,6 +861,24 @@
   margin-bottom: 10px;
 }
 
+.add-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.add-filters .chips {
+  flex: 1;
+}
+
+.add-provider {
+  width: auto;
+  min-width: 150px;
+  max-width: 220px;
+  margin-left: auto;
+}
+
 .catalog-list {
   padding: 0 20px;
 }
@@ -1274,5 +1292,21 @@
   .price-actions {
     grid-column: 1 / -1;
     padding-bottom: 0;
+  }
+
+  /* 添加模型：接近全屏的居中面板 */
+  dialog.add-dialog {
+    width: calc(100vw - 24px);
+    max-width: calc(100vw - 24px);
+    height: min(88dvh, 900px);
+    max-height: 92dvh;
+  }
+
+  dialog.add-dialog .manual-add {
+    padding: 10px 16px 14px;
+  }
+
+  .add-provider {
+    max-width: none;
   }
 }
