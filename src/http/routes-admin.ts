@@ -1,5 +1,6 @@
 import { parseConfigText } from "../config/load.ts";
 import { isApiKind, normalizeConfig, type ApiKind, type ContextConfig, type GatewayConfig } from "../config/schema.ts";
+import { capabilitySnapshot, capabilitySourceUrl, matchCapability } from "../core/capability.ts";
 import type { EventKind } from "../core/events.ts";
 import { ConfigRuleError, type Runtime } from "../runtime.ts";
 import { HttpError, type Ctx, type Router } from "./server.ts";
@@ -28,6 +29,54 @@ export function registerAdminRoutes(router: Router, runtime: Runtime): void {
 
   router.add("GET", "/api/overview", (ctx) => {
     ctx.send(200, buildOverview(runtime));
+  });
+
+  router.add("GET", "/api/capability", async (ctx) => {
+    const refresh = ctx.url.searchParams.get("refresh") === "1";
+    const snapshot = await capabilitySnapshot({ refresh });
+    const tracked = new Set(runtime.chainCodes());
+    const models = runtime.store.catalog.models.map((entry) => {
+      const match = matchCapability(snapshot.index, entry.upstream);
+      const record = runtime.store.get(entry.code);
+      return {
+        code: entry.code,
+        upstream: entry.upstream,
+        family: entry.family,
+        provider: entry.provider || runtime.providerIdFor(entry.code),
+        tracked: tracked.has(entry.code),
+        health: record?.health ?? null,
+        score: match?.model.score ?? null,
+        matchedSlug: match?.model.slug ?? null,
+        matchedName: match?.model.name ?? null,
+        reasoning: match?.model.reasoning ?? null,
+        contextWindow: match?.model.contextWindow ?? null,
+      };
+    });
+
+    models.sort(
+      (a, b) =>
+        (b.score ?? Number.NEGATIVE_INFINITY) - (a.score ?? Number.NEGATIVE_INFINITY) ||
+        a.code.localeCompare(b.code),
+    );
+
+    ctx.send(
+      200,
+      {
+        ok: snapshot.error === null,
+        error: snapshot.error,
+        source: {
+          name: "Artificial Analysis",
+          url: capabilitySourceUrl,
+          fetchedAt: snapshot.fetchedAt,
+          cached: snapshot.cached,
+          total: snapshot.total,
+          scored: snapshot.scored,
+          matched: models.filter((model) => model.score !== null).length,
+        },
+        models,
+      },
+      { "cache-control": "no-store" },
+    );
   });
 
   router.add("GET", "/api/events", (ctx) => {

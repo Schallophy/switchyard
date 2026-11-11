@@ -5,11 +5,13 @@ import { setConfig, setOverview, store } from "./store.js";
 import { toast } from "./ui.js";
 import * as eventsView from "./views/events.js";
 import * as modelsView from "./views/models.js";
+import * as rankView from "./views/rank.js";
 import * as settingsView from "./views/settings.js";
 import * as usageView from "./views/usage.js";
 
 const MODULES = {
   models: modelsView,
+  rank: rankView,
   usage: usageView,
   events: eventsView,
   settings: settingsView,
@@ -17,6 +19,7 @@ const MODULES = {
 
 const TITLES = {
   models: "模型",
+  rank: "排行",
   usage: "用量",
   events: "事件",
   settings: "设置",

@@ -1,4 +1,4 @@
-export const VIEWS = ["models", "usage", "events", "settings"];
+export const VIEWS = ["models", "rank", "usage", "events", "settings"];
 
 const LEGACY = {
   overview: "models",

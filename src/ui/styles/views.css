@@ -1053,6 +1053,192 @@
 }
 
 /* ============================================================
+   Model ranking
+   ============================================================ */
+
+.rank-summary {
+  margin-top: 18px;
+}
+
+.rank-notice {
+  margin-top: 14px;
+}
+
+.rank-notice .btn {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.rank-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  margin: 16px 0 4px;
+  padding: 12px 0;
+  border-top: 1px solid var(--rule-soft);
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.rank-filters {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.rank-filters .input {
+  width: min(300px, 100%);
+}
+
+.rank-filters .select {
+  width: auto;
+  min-width: 160px;
+}
+
+.rank-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.rank-visible {
+  color: var(--ink-faint);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.rank-table td {
+  vertical-align: middle;
+}
+
+.rank-table tr.is-selected {
+  background: var(--surface-hover);
+}
+
+.rank-table tr.is-tracked .rank-code {
+  color: var(--ink-soft);
+}
+
+.rank-model {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.rank-check {
+  display: grid;
+  flex-shrink: 0;
+  place-content: center;
+  cursor: pointer;
+}
+
+.rank-check input {
+  appearance: none;
+  display: grid;
+  place-content: center;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  border: 1px solid var(--ink-faint);
+  border-radius: 3px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.rank-check input:checked {
+  border-color: var(--ink);
+  background: var(--ink);
+}
+
+.rank-check input:checked::after {
+  content: "";
+  width: 7px;
+  height: 4px;
+  border-left: 2px solid var(--paper);
+  border-bottom: 2px solid var(--paper);
+  transform: translateY(-1px) rotate(-45deg);
+}
+
+.rank-check input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.rank-no {
+  flex-shrink: 0;
+  width: 26px;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.rank-model-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.rank-code {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rank-meta {
+  overflow: hidden;
+  color: var(--ink-faint);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rank-score-inner {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.rank-meter {
+  width: 56px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--rule-soft);
+}
+
+.rank-meter span {
+  display: block;
+  height: 100%;
+  background: var(--ink);
+}
+
+.rank-score strong {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.rank-none,
+.rank-added {
+  color: var(--ink-soft);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* ============================================================
    Responsive
    ============================================================ */
 
@@ -1267,5 +1453,48 @@
     max-width: calc(100vw - 24px);
     height: min(88dvh, 900px);
     max-height: 92dvh;
+  }
+}
+
+@media (max-width: 720px) {
+  .rank-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .rank-filters {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .rank-filters .input,
+  .rank-filters .select {
+    width: 100%;
+  }
+
+  .rank-actions {
+    margin-left: 0;
+  }
+
+  .rank-model {
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .rank-code {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    word-break: break-all;
+  }
+
+  .rank-meta {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
+  .rank-score-inner {
+    justify-content: flex-start;
   }
 }
