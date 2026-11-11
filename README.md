@@ -48,27 +48,21 @@ cp .env.example .env       # 1. 填 DASHSCOPE_API_KEY=sk-...
 
 ### 控制台输出
 
-`npm start` 会先打印启动摘要（网关地址、看板、配置与数据目录、提供商/Key 状态、当前模型），然后才输出警告和访问日志：
+`npm start` 只打印接入地址、看板地址和配置文件路径，然后输出启动警告：
 
 ```text
 ◈ Switchyard v0.1.0
   gateway  http://127.0.0.1:8788/v1
   admin    http://127.0.0.1:8788
   config   /path/to/config.json
-  data     /path/to/data
-  provider 2 个：dashscope, qianwenai
-  auth     2/2 个提供商已配置
-  models   1 个 · 当前 qianwenai/deepseek-v4.1-flash-1017
-  log      /path/to/data/switchyard.log
 
 就绪 · 按 Ctrl+C 停止
-
-08:32:49  POST /v1/chat/completions  200 8.4s
 ```
 
-- 访问日志每行一条，写入 `switchyard.log` 的 JSON 版本保留 `method` / `path` / `status` / `ms` 字段。
+- 每个 API 请求不再打到控制台。访问日志只写入 `switchyard.log`（JSON，含 `method` / `path` / `status` / `ms`）；想在终端看逐请求的一行日志，把 `SWITCHYARD_LOG_LEVEL=debug`（或 `log.level`）设为 `debug`。
+- 失败请求仍会输出 WARN / ERROR 行，例如模型失效、全部候选不可用。
 - 输出到终端时带颜色；重定向到文件或设置 `NO_COLOR=1` 时自动去掉 ANSI 序列。
-- `.env` 由程序自动加载（存在才读），不再需要 `--env-file` 参数，也不会在缺少 `.env` 时打印提示。
+- `.env` 由程序自动加载（存在才读），缺少时静默跳过，语法错误仍会报错。
 - npm 自己会打印 `> switchyard@0.1.0 start` 两行；想只看应用输出可以用 `npm start --silent`，或直接 `node src/index.ts`。
 - 配置迁移等提示只在启动时输出，重复提示说明 `config.json` 还是旧格式——在看板里保存一次即可写回新格式。
 

@@ -294,7 +294,7 @@ export class Runtime {
       model,
       detail: { status: error.status, code: error.code, message: error.message },
     });
-    this.logger.warn("model unavailable", { model, code: error.code, status: error.status });
+    this.logger.warn(`${model} 不可用：${error.label}`, { code: error.code, status: error.status });
   }
 
   markInvalid(model: string, error: NormalizedError): void {
@@ -312,7 +312,7 @@ export class Runtime {
       model,
       detail: { status: error.status, code: error.code },
     });
-    this.logger.warn("model invalid", { model, code: error.code });
+    this.logger.warn(`${model}：${error.label}`, { code: error.code });
   }
 
   markThrottled(model: string, error: NormalizedError): void {
@@ -461,12 +461,13 @@ export class Runtime {
       candidates.length > 0 &&
       input.body.previous_response_id === undefined;
 
-    this.logger.debug("responses chaining", {
-      path: input.path,
-      enabled: chainEnabled,
-      items: Array.isArray(input.body.input) ? input.body.input.length : typeof input.body.input,
-      hasPrevious: input.body.previous_response_id !== undefined,
-    });
+    if (input.path === "responses") {
+      this.logger.debug("responses chaining", {
+        enabled: chainEnabled,
+        items: Array.isArray(input.body.input) ? input.body.input.length : typeof input.body.input,
+        hasPrevious: input.body.previous_response_id !== undefined,
+      });
+    }
 
     let forwardBody = input.body;
     let chainItems: unknown[] | null = null;
@@ -606,9 +607,9 @@ export class Runtime {
         : `${result.error.label}：${result.error.message}`,
       detail: { attempts: summarizeAttempts(result.attempts), kind: result.error.kind, code: result.error.code },
     });
-    this.logger.warn("request failed", {
-      kind: result.error.kind,
+    this.logger.warn(`请求失败：${result.error.label}`, {
       attempts: result.attempts.length,
+      status: result.error.status ?? undefined,
     });
   }
 

@@ -130,7 +130,8 @@ export function createLogger(options: LoggerOptions = {}): Logger {
         const now = new Date();
         append({ at: now.toISOString(), level: "info", message: "api request", method, path, status, ms });
 
-        if (!pretty) return;
+        // 访问日志默认只进文件；想看每一行请求时把 log.level 调到 debug
+        if (!pretty || level !== "debug") return;
         const tone = status >= 500 ? RED : status >= 400 ? YELLOW : GREEN;
         process.stdout.write(
           `${paint(DIM, clock(now))}  ${method.padEnd(4)} ${path}  ${paint(tone, String(status))} ${paint(

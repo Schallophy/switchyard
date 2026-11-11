@@ -103,24 +103,9 @@ async function main(): Promise<void> {
 }
 
 function banner(runtime: Runtime): void {
-  const infos = runtime.providerKeyInfos();
-  const configured = infos.filter((item) => item.configured);
   const host = runtime.config.host === "0.0.0.0" ? "127.0.0.1" : runtime.config.host;
   const base = `http://${host}:${runtime.config.port}`;
   const ui = runtime.config.ui.enabled;
-  const providers =
-    runtime.config.providers.length === 1
-      ? `${runtime.config.providers[0].id} · ${runtime.config.providers[0].baseUrl}`
-      : `${runtime.config.providers.length} 个：${runtime.config.providers.map((item) => item.id).join(", ")}`;
-  const auth =
-    infos.length === 1
-      ? configured.length > 0
-        ? `${configured[0].source === "env" ? "环境变量" : "config.json"} · ${configured[0].masked}`
-        : "未配置 · 按需再填即可"
-      : `${configured.length}/${infos.length} 个提供商已配置`;
-  const logFile = runtime.config.log.file.trim()
-    ? resolve(runtime.config.log.file.trim())
-    : resolve(runtime.dataDir, "switchyard.log");
 
   const row = (label: string, value: string): string => `${paint(DIM, `  ${label.padEnd(9)}`)}${value}`;
   const lines = [
@@ -128,11 +113,6 @@ function banner(runtime: Runtime): void {
     row("gateway", `${base}/v1`),
     row("admin", ui ? base : "已关闭（ui.enabled = false）"),
     row("config", `${runtime.configPath}${ui ? "" : paint(DIM, "  ← 唯一配置入口")}`),
-    row("data", runtime.dataDir),
-    row("provider", providers),
-    row("auth", auth),
-    row("models", `${runtime.chainCodes().length} 个 · 当前 ${runtime.activeModel() ?? "未选择"}`),
-    row("log", logFile),
     "",
   ];
   process.stdout.write(`${lines.join("\n")}\n`);
