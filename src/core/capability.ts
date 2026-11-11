@@ -27,7 +27,23 @@ const EFFORT_SUFFIXES = [
 ];
 
 /** 这些后缀不改变模型本身，去掉后仍可视为同一个模型。 */
-const VARIANT_SUFFIXES = ["free", "batch", "realtime", "online", "turbo", "latest", "preview", "exp"];
+const VARIANT_SUFFIXES = [
+  "free",
+  "batch",
+  "realtime",
+  "online",
+  "turbo",
+  "latest",
+  "preview",
+  "exp",
+  "it",
+  "instruct",
+  "highspeed",
+  "ultraspeed",
+];
+
+/** AA 的部分 slug 带厂商前缀，而目录里的上游名已经去掉了厂商层。 */
+const VENDOR_PREFIXES = ["nvidia", "tencent"];
 
 export interface CapabilityModel {
   slug: string;
@@ -238,13 +254,15 @@ function extractJsonArray(text: string, key: string): unknown[] | null {
 }
 
 /**
- * 为所有带评分的 AA 条目建匹配索引。每个 slug 会生成多个归一化 key，
- * 并记录归一化代价，匹配时优先选代价最低的条目。
+ * 为所有 AA 条目建匹配索引。带评分的条目正常入索引；未评分条目也入索引，
+ * 用来阻止同名模型退而匹配到带后缀的相邻条目（例如未评分的 foo 挡住 foo-preview）。
+ * 唯一的例外是 AA 同时提供了仅多日期后缀的有评分快照，此时以该快照为准。
  */
 export function buildCapabilityIndex(models: CapabilityModel[]): CapabilityIndex {
+  const superseded = dateSupersededSlugs(models);
   const index: CapabilityIndex = new Map();
   for (const model of models) {
-    if (model.score === null) continue;
+    if (model.score === null && superseded.has(normalizeModelName(model.slug))) continue;
     for (const variant of nameVariants(model.slug)) {
       const list = index.get(variant.key) ?? [];
       const existing = list.find((entry) => entry.model.slug === model.slug);
@@ -259,24 +277,54 @@ export function buildCapabilityIndex(models: CapabilityModel[]): CapabilityIndex
   return index;
 }
 
-/** 把目录里的上游模型名匹配到 AA 条目；没有评分或匹配不到时返回 null。 */
-export function matchCapability(index: CapabilityIndex, upstream: string): CapabilityMatch | null {
-  let best: { model: CapabilityModel; cost: number; score: number } | null = null;
-
-  for (const variant of nameVariants(upstream)) {
-    for (const entry of index.get(variant.key) ?? []) {
-      const cost = Math.max(variant.cost, entry.cost);
-      const score = entry.model.score ?? Number.NEGATIVE_INFINITY;
-      if (!best || cost < best.cost || (cost === best.cost && score > best.score)) {
-        best = { model: entry.model, cost, score };
-      }
-    }
+/**
+ * 有评分且带日期后缀的 slug，例如 ling-3-1-flash-1019。
+ * 对应的无日期条目往往是同一个模型的未评分快照，不应挡住这个评分。
+ */
+function dateSupersededSlugs(models: CapabilityModel[]): Set<string> {
+  const superseded = new Set<string>();
+  for (const model of models) {
+    if (model.score === null) continue;
+    const base = normalizeModelName(model.slug);
+    const stripped = stripDate(base);
+    if (stripped !== base) superseded.add(stripped);
   }
-
-  return best ? { model: best.model, cost: best.cost } : null;
+  return superseded;
 }
 
-function nameVariants(value: string): Array<{ key: string; cost: number }> {
+/**
+ * 把目录里的上游模型名匹配到 AA 条目；没有评分或匹配不到时返回 null。
+ *
+ * 只接受归一化代价最低的那一档候选：如果最低档只有未评分条目，说明目录里的
+ * 就是那个未评分模型，不能退而求其次去匹配一个更不像的有评分模型。
+ */
+export function matchCapability(index: CapabilityIndex, upstream: string): CapabilityMatch | null {
+  const candidates: Array<{ model: CapabilityModel; cost: number }> = [];
+
+  for (const variant of nameVariants(upstream, { parameterAlias: true })) {
+    for (const entry of index.get(variant.key) ?? []) {
+      candidates.push({ model: entry.model, cost: Math.max(variant.cost, entry.cost) });
+    }
+  }
+  if (candidates.length === 0) return null;
+
+  let lowest = Number.POSITIVE_INFINITY;
+  for (const candidate of candidates) lowest = Math.min(lowest, candidate.cost);
+
+  let best: CapabilityMatch | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  for (const candidate of candidates) {
+    const score = candidate.model.score;
+    if (candidate.cost !== lowest || score === null) continue;
+    if (!best || score > bestScore) {
+      best = { model: candidate.model, cost: candidate.cost };
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+function nameVariants(value: string, options: { parameterAlias?: boolean } = {}): Array<{ key: string; cost: number }> {
   const base = normalizeModelName(value);
   if (!base) return [];
 
@@ -298,6 +346,15 @@ function nameVariants(value: string): Array<{ key: string; cost: number }> {
   add(noVariantDate, 2);
   add(stripSuffix(stripDate(base), EFFORT_SUFFIXES), 3);
   add(stripSuffix(noVariantDate, EFFORT_SUFFIXES), 3);
+  add(stripTrailingZero(base), 2);
+
+  // 只对目录侧启用参数别名：把 muse-glimmer-30b 映射到 AA 的无尺寸名 muse-glimmer。
+  // 反向不启用，避免把 llama-3-8b 之类的尺寸变体错误合并到另一个尺寸。
+  if (options.parameterAlias) add(stripParameter(base), 2);
+
+  for (const prefix of VENDOR_PREFIXES) {
+    if (base.startsWith(`${prefix}-`)) add(base.slice(prefix.length + 1), 1);
+  }
 
   return [...out].map(([key, cost]) => ({ key, cost }));
 }
@@ -332,6 +389,25 @@ function stripSuffix(value: string, suffixes: string[]): string {
 
 function stripDate(value: string): string {
   return value.replace(/-(20\d{2}[-.]\d{2}[-.]\d{2}|\d{8}|\d{6}|\d{4})$/g, "");
+}
+
+/** 只去掉一个表示 x.0 版本的结尾 `-0`，不碰更长的版本号。 */
+function stripTrailingZero(value: string): string {
+  return value.endsWith("-0") ? value.slice(0, -2) : value;
+}
+
+/**
+ * 去掉结尾的模型尺寸（30b、120b、a3b、e4b…），把 muse-glimmer-30b 还原成 muse-glimmer。
+ * 只在名字主体不含数字、且至少有两段时启用，避免把 qwen3-14b、deepseek-r1-8b
+ * 之类的版本号当成尺寸剥掉。
+ */
+function stripParameter(value: string): string {
+  const match = /-([a-z]?\d+(?:\.\d+)?[bm])$/.exec(value);
+  if (!match) return value;
+  const head = value.slice(0, match.index);
+  if (!/[a-z]/.test(head) || /\d/.test(head)) return value;
+  if (head.split("-").filter(Boolean).length < 2) return value;
+  return head;
 }
 
 function asString(value: unknown): string | null {
