@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigError, loadConfig, parseConfigText, saveConfig } from "../src/config/load.ts";
 import { defaultConfig } from "../src/config/schema.ts";
+import type { NormalizedError } from "../src/types.ts";
 import type { Logger } from "../src/util/log.ts";
 
 test("config text tolerates comments and trailing commas", () => {
@@ -154,6 +155,55 @@ test("the effective model skips dead entries after the active one", async () => 
 
   runtime.store.setHealth("dashscope/a", "dead", { reason: "额度已耗尽" });
   assert.equal(runtime.effectiveModel(), null);
+
+  await runtime.shutdown();
+});
+
+test("the current output follows the model that actually responded", async () => {
+  const { runtime } = await makeRuntime();
+  await runtime.updateChainModels(["dashscope/a", "dashscope/b"]);
+  assert.equal(runtime.lastOutput(), null);
+
+  const quota: NormalizedError = {
+    kind: "quota_exhausted",
+    label: "额度耗尽",
+    status: 403,
+    code: "AllocationQuota",
+    message: "quota",
+    fatal: false,
+    markDead: true,
+    markInvalid: false,
+    retryable: true,
+  };
+  let failA = true;
+  runtime.client.attempt = async (_path, model) => {
+    if (model === "a" && failA) {
+      failA = false;
+      return { ok: false, error: quota, latencyMs: 1 };
+    }
+    return { ok: true, response: new Response("{}"), latencyMs: 1, providerId: "dashscope" };
+  };
+
+  const auto = await runtime.requestThrough({
+    path: "chat/completions",
+    model: "auto",
+    body: { messages: [{ role: "user", content: "hi" }] },
+  });
+  assert.equal(auto.result.ok, true);
+  assert.equal(runtime.lastOutput()?.model, "dashscope/b", "记录真实承接的模型，而不是首选");
+  assert.equal(runtime.lastOutput()?.mode, "auto");
+  assert.equal(runtime.lastOutput()?.requested, "auto");
+  assert.equal(runtime.lastOutput()?.provider, "dashscope");
+
+  const direct = await runtime.requestThrough({
+    path: "chat/completions",
+    model: "dashscope/a",
+    body: { messages: [{ role: "user", content: "hi" }] },
+  });
+  assert.equal(direct.result.ok, true);
+  assert.equal(runtime.lastOutput()?.model, "dashscope/a");
+  assert.equal(runtime.lastOutput()?.mode, "direct");
+  assert.equal(runtime.lastOutput()?.requested, "dashscope/a");
 
   await runtime.shutdown();
 });

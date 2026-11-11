@@ -15,7 +15,7 @@ import {
   itemsPrefixHashes,
   responsesInputItems,
 } from "./core/responses-chain.ts";
-import { activeModel, isDeadRetryDue, resolveRoute, selectCandidates } from "./core/selection.ts";
+import { activeModel, isDeadRetryDue, resolveRoute, selectCandidates, type RouteMode } from "./core/selection.ts";
 import { StateStore } from "./store/state.ts";
 import type { AttemptRecord, AttemptOutcome, ModelRecord, NormalizedError, Usage } from "./types.ts";
 import { ProviderClient, resolveKeyInfo, resolveProvider, keyInfoFor, type KeyInfo } from "./provider/client.ts";
@@ -68,6 +68,17 @@ export interface ChainSnapshot {
   dead: number;
 }
 
+/** 最近一次真正产出响应的模型，用于看板「当前输出」实时跟随流量。 */
+export interface OutputSnapshot {
+  model: string;
+  provider: string | null;
+  api: ApiKind;
+  /** 客户端这次请求的 model 字段，可能是 auto。 */
+  requested: string;
+  mode: RouteMode;
+  at: string;
+}
+
 /** 配置层面的规则冲突（非法模型、非法窗口等），由路由层翻译成 400。 */
 export class ConfigRuleError extends Error {
   readonly details: string[];
@@ -116,6 +127,7 @@ export class Runtime {
   #warnings: string[];
   #responsesChain = new ResponseChainStore();
   #chainStats = { requests: 0, hits: 0, fallbacks: 0 };
+  #lastOutput: OutputSnapshot | null = null;
 
   private constructor(options: RuntimeOptions, store: StateStore) {
     this.config = options.config;
@@ -224,6 +236,11 @@ export class Runtime {
 
   chainCodes(): string[] {
     return [...this.config.chain.models];
+  }
+
+  /** 最近一次真正产出响应的模型；重启或尚无请求时为 null。 */
+  lastOutput(): OutputSnapshot | null {
+    return this.#lastOutput;
   }
 
   snapshotModel(code: string): RuntimeSnapshotModel {
@@ -557,6 +574,17 @@ export class Runtime {
     }
 
     // 链式请求的上游 prompt 只是增量，不能用它校准「全量输入」的估算
+    if (result.ok) {
+      this.#lastOutput = {
+        model: result.model,
+        provider: result.provider ?? this.providerIdFor(result.model) ?? null,
+        api,
+        requested: input.model?.trim() || "auto",
+        mode: route.mode,
+        at: new Date().toISOString(),
+      };
+    }
+
     return { result, sample: chainServed ? null : sample };
   }
 

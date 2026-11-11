@@ -406,6 +406,7 @@ function buildOverview(runtime: Runtime): Record<string, unknown> {
         a.label.localeCompare(b.label),
     ),
     chain: runtime.chainSnapshot(),
+    output: runtime.lastOutput(),
     activeModel: runtime.activeModel(),
     catalog: { fetchedAt: runtime.store.catalog.fetchedAt, models: catalog },
     events: runtime.events.recent(120),

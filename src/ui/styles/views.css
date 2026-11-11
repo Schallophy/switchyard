@@ -43,6 +43,21 @@
   font-size: 13px;
 }
 
+.output-note.subtle {
+  margin-top: 6px;
+  color: var(--ink-faint);
+  font-size: 11.5px;
+}
+
+.output-note.subtle code {
+  color: var(--ink-soft);
+}
+
+.output-note code {
+  font-family: var(--font-mono);
+  color: var(--ink);
+}
+
 .output-actions {
   display: flex;
   flex-shrink: 0;

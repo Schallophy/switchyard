@@ -155,7 +155,7 @@ function paint() {
     </div>
   `;
 
-  signature = railSignature(chain);
+  signature = railSignature(data);
   eventSignature = eventsSignature(data);
   configSignature = configSignatureNow();
   tickCountdowns(rootEl);
@@ -163,27 +163,55 @@ function paint() {
 
 function outputMainHtml(data) {
   const chain = data.chain;
-  const current = chain.models.find((model) => model.code === chain.effective) || null;
-  const status = statusOf(current, chain);
-  const note =
-    chain.active && chain.effective && chain.active !== chain.effective
-      ? `<p class="output-note">首选 ${esc(chain.active)} 暂不可用，恢复后自动切回</p>`
-      : "";
+  const output = data.output ?? null;
+  const code = output?.model || chain.effective;
+  const current = code ? chain.models.find((model) => model.code === code) ?? null : null;
+  const status = outputStatus(output, current, chain);
+  const providerId = current?.provider || output?.provider || providerIdFromCode(code, data);
+  const provider = providerId ? providerLabel({ code, provider: providerId }, data) : "";
+  const meta = [
+    `<span class="status-text" data-tone="${status.tone}">${esc(status.text)}</span>`,
+    countdownHtml(status),
+    provider ? `<span class="dot-sep" aria-hidden="true">·</span><span>${esc(provider)}</span>` : "",
+    output
+      ? `<span class="dot-sep" aria-hidden="true">·</span><span>${esc(fmtAgo(output.at))}</span>`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("");
+
+  const notes = [];
+  if (output && chain.effective && output.model !== chain.effective) {
+    notes.push(
+      `<p class="output-note subtle">auto 下一站：<code>${esc(chain.effective)}</code></p>`,
+    );
+  }
+  if (chain.active && chain.effective && chain.active !== chain.effective) {
+    notes.push(
+      `<p class="output-note">首选 ${esc(chain.active)} 暂不可用，恢复后自动切回</p>`,
+    );
+  }
 
   return `
-    <div class="output-label" id="output-label">当前输出</div>
-    <div class="output-code" id="out-code">${esc(chain.effective || "没有可用模型")}</div>
-    <div class="output-meta">
-      <span class="status-text" data-tone="${status.tone}">${esc(status.text)}</span>
-      ${countdownHtml(status)}
-      ${
-        current
-          ? `<span class="dot-sep" aria-hidden="true">·</span><span>${esc(providerLabel(current, data))}</span>`
-          : ""
-      }
-    </div>
-    ${note}
+    <div class="output-label" id="output-label" title="最近一次实际产出响应的模型；还没有输出时显示 auto 将命中的模型">当前输出</div>
+    <div class="output-code" id="out-code">${esc(code || "没有可用模型")}</div>
+    <div class="output-meta">${meta}</div>
+    ${notes.join("")}
   `;
+}
+
+/** 最近一次输出来自列表外的直连或透传模型时，用请求方式代替健康状态。 */
+function outputStatus(output, current, chain) {
+  if (current) return statusOf(current, chain);
+  if (output?.mode === "direct") return { tone: "idle", text: "直连" };
+  if (output?.mode === "passthrough") return { tone: "idle", text: "透传" };
+  if (output) return { tone: "idle", text: "不在列表" };
+  return statusOf(null, chain);
+}
+
+/** 看板上标为「当前」的模型：优先跟随真实输出，尚未有请求时回退到 auto 将命中的模型。 */
+function currentOutputCode(data) {
+  return data.output?.model || data.chain.effective;
 }
 
 function statsHtml(data) {
@@ -222,7 +250,7 @@ function railTools() {
 
 function rowHtml(model, index, data) {
   const status = statusOf(model, data.chain);
-  const current = data.chain.effective === model.code;
+  const current = currentOutputCode(data) === model.code;
   const selected = local.selected.has(model.code);
   const batch = local.batch;
 
@@ -397,12 +425,13 @@ function emptyHtml() {
 
 /* ---------- polling update ---------- */
 
-function railSignature(chain) {
+function railSignature(data) {
   return [
-    chain.active,
-    chain.effective,
+    data.chain.active,
+    data.chain.effective,
+    data.output?.model || "",
     local.batch ? "1" : "0",
-    ...chain.models.map(
+    ...data.chain.models.map(
       (model) =>
         `${model.code}:${model.health}:${model.throttledUntil || ""}:${model.checkedAt || ""}:${
           model.failures || 0
@@ -449,7 +478,7 @@ function update() {
   const statline = rootEl.querySelector("#statline");
   if (statline) statline.innerHTML = statsHtml(data);
 
-  const nextSignature = railSignature(data.chain);
+  const nextSignature = railSignature(data);
   const nextConfigSignature = configSignatureNow();
   if (nextSignature !== signature) {
     if (local.dragging) return;
@@ -594,7 +623,7 @@ function openRowMenu(anchor, code, ctx) {
 
   openMenu(anchor, [
     {
-      label: "设为当前输出",
+      label: "设为首选",
       disabled: data.chain.active === code,
       action: () => setActive(code, ctx),
     },
@@ -612,7 +641,7 @@ function openRowMenu(anchor, code, ctx) {
 async function setActive(code, ctx) {
   try {
     await api.post("/api/chain/active", { model: code });
-    toast(`当前输出已设为 ${code}`, "ok");
+    toast(`首选已设为 ${code}；auto 会从它开始`, "ok");
     await ctx.refresh();
   } catch (error) {
     toast(error.message, "bad", "设置失败");
@@ -840,7 +869,7 @@ function openDetail(code, ctx) {
       .join("")}</dl>${error}`,
     footer: `
       <button class="btn" type="button" data-act="revive">重置状态</button>
-      <button class="btn" type="button" data-act="active">设为当前输出</button>
+      <button class="btn" type="button" data-act="active">设为首选</button>
       <button class="btn danger" type="button" data-act="remove">移出列表</button>
     `,
     onMount(node) {
@@ -1120,7 +1149,7 @@ function openTest(ctx) {
       <div class="test-result" id="test-result">${testResultHtml(local.test)}</div>
     `,
     footer: `
-      <span class="dialog-note">从当前输出开始，失败时按列表回退</span>
+      <span class="dialog-note">从首选模型开始，失败时按列表回退</span>
       <button class="btn primary" type="button" data-act="run">发送</button>
     `,
     onMount(node) {
