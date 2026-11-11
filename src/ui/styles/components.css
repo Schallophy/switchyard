@@ -586,14 +586,8 @@ dialog.add-dialog #catalog-wrap {
 
 dialog.add-dialog .dialog-head,
 dialog.add-dialog .dialog-foot,
-dialog.add-dialog .sheet-tools,
-dialog.add-dialog .manual-add {
+dialog.add-dialog .sheet-tools {
   flex-shrink: 0;
-}
-
-dialog.add-dialog .manual-add {
-  margin: 0;
-  padding: 12px 20px 16px;
 }
 
 @keyframes dialog-in {

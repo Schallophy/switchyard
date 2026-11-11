@@ -962,21 +962,6 @@
   text-align: center;
 }
 
-.manual-add {
-  margin: 20px;
-  padding-top: 16px;
-  border-top: 1px solid var(--rule-soft);
-}
-
-.manual-add .field-label {
-  display: block;
-  margin-bottom: 6px;
-}
-
-.manual-add .field-hint {
-  margin-top: 6px;
-}
-
 .sheet-foot {
   display: flex;
   align-items: center;
@@ -1300,10 +1285,6 @@
     max-width: calc(100vw - 24px);
     height: min(88dvh, 900px);
     max-height: 92dvh;
-  }
-
-  dialog.add-dialog .manual-add {
-    padding: 10px 16px 14px;
   }
 
   .add-provider {

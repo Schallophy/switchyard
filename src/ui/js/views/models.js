@@ -922,8 +922,6 @@ function openAddSheet(ctx) {
         <div class="add-filters">
           <div class="chips" id="add-filters">
             <button class="chip" type="button" data-filter="untracked" aria-pressed="true">未加入</button>
-            <button class="chip" type="button" data-filter="all" aria-pressed="false">全部</button>
-            <button class="chip" type="button" data-filter="alive" aria-pressed="false">可用</button>
           </div>
           <select class="select add-provider" id="add-provider" aria-label="按提供商筛选">
             ${catalogProviderOptions()}
@@ -931,15 +929,6 @@ function openAddSheet(ctx) {
         </div>
       </div>
       <div id="catalog-wrap">${catalogInner()}</div>
-      <div class="manual-add">
-        <label class="field-label" for="manual-code">手动添加</label>
-        <div class="row-inline">
-          <select class="select" id="manual-provider">${providerOptions()}</select>
-          <input class="input mono" id="manual-code" placeholder="例如 qwen3.8-max-0902" autocomplete="off">
-          <button class="btn" type="button" data-act="manual-add">加入</button>
-        </div>
-        <p class="field-hint">模型绑定到所选提供商；同一模型名挂在两个提供商下算两个模型。</p>
-      </div>
     `,
     footer: `<div class="sheet-foot" id="add-foot">${addFootHtml()}</div>`,
     onMount(node) {
@@ -988,18 +977,6 @@ function filteredCatalog() {
     }
     return true;
   });
-}
-
-function providerOptions() {
-  const data = store.data;
-  return (data?.providers || [])
-    .map(
-      (provider) =>
-        `<option value="${esc(provider.id)}" ${provider.id === data.defaultProvider ? "selected" : ""}>${esc(
-          provider.label || provider.id,
-        )}</option>`,
-    )
-    .join("");
 }
 
 function catalogInner() {
@@ -1058,8 +1035,6 @@ function bindAdd(node, ctx) {
   const providerFilter = node.querySelector("#add-provider");
   const wrap = node.querySelector("#catalog-wrap");
   const foot = node.querySelector("#add-foot");
-  const manual = node.querySelector("#manual-code");
-  const manualProvider = node.querySelector("#manual-provider");
 
   const rerenderList = () => {
     wrap.innerHTML = catalogInner();
@@ -1088,7 +1063,6 @@ function bindAdd(node, ctx) {
 
   providerFilter?.addEventListener("change", () => {
     local.add.provider = providerFilter.value;
-    if (providerFilter.value && manualProvider) manualProvider.value = providerFilter.value;
     rerenderList();
   });
 
@@ -1100,44 +1074,11 @@ function bindAdd(node, ctx) {
     rerenderFoot();
   });
 
-  const addManual = async () => {
-    const upstream = manual.value.trim();
-    if (!upstream) {
-      toast("请输入模型名", "warn");
-      return;
-    }
-    const provider = manualProvider?.value || "";
-    const code = provider && !upstream.startsWith(`${provider}/`) ? `${provider}/${upstream}` : upstream;
-    try {
-      await api.post("/api/chain/models", { code });
-      toast(`已把 ${code} 加入模型列表`, "ok");
-      manual.value = "";
-      await ctx.refresh();
-      rerenderList();
-      rerenderFoot();
-    } catch (error) {
-      toast(error.message, "bad", "添加失败");
-    }
-  };
-
-  manual.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      addManual();
-    }
-  });
-
   node.addEventListener("click", async (event) => {
     const target = event.target.closest("[data-act]");
     if (!target) return;
 
     const act = target.dataset.act;
-
-    if (act === "manual-add") {
-      event.preventDefault();
-      await addManual();
-      return;
-    }
 
     if (act === "refresh") {
       event.preventDefault();
