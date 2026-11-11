@@ -4,6 +4,7 @@ import { ANONYMOUS_CALLER, CONSOLE_CALLER, type CallerIdentity } from "./core/ca
 import { apisFor as resolveApis, apiKindForPath, supportsApi as checkApi } from "./core/api.ts";
 import { joinModelCode, splitModelCode } from "./core/model-code.ts";
 import { EventLog } from "./core/events.ts";
+import { LiveOutputLog } from "./core/live-output.ts";
 import { runFailover, type FailoverHooks, type FailoverResult } from "./core/failover.ts";
 import { priceTierAt, usageCost } from "./core/pricing.ts";
 import {
@@ -107,6 +108,7 @@ export class Runtime {
   readonly logger: Logger;
   readonly store: StateStore;
   readonly events: EventLog;
+  readonly liveOutput: LiveOutputLog;
   readonly client: ProviderClient;
 
   #bootedAt = new Date();
@@ -122,6 +124,7 @@ export class Runtime {
     this.logger = options.logger;
     this.store = store;
     this.events = new EventLog(`${options.dataDir}/events.jsonl`);
+    this.liveOutput = new LiveOutputLog();
     this.client = new ProviderClient(() => this.config);
     this.#warnings = options.warnings;
   }

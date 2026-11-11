@@ -399,6 +399,7 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 | 模型 | 当前输出与状态、请求/切换/Token 统计、路由轨道（拖动或 `Alt+↑/↓` 调整优先级）、设为当前输出、重置状态、编辑 API 能力、批量移出、添加模型面板（悬浮居中，按提供商与关键词筛选全部目录模型，已加入的显示为禁用、刷新目录）、发送测试、链路策略摘要与最近事件 |
 | 排行 | 按 Artificial Analysis 的 Intelligence Index 排序目录模型；多选后可只看已选并按能力从高到低排列，逐行添加；评分与勾选只在内存中，不写入配置 |
 | 用量 | 按调用方 API Key 汇总请求、失败、切换、真实输入/输出 Token、缓存命中率与按配置单价估算的成本，可分别排序并展开明细 |
+| 输出 | 实时查看最近经过网关的模型输出，每条标出实际承接的模型、提供商、协议（Chat / Completions / Responses / Embeddings）、流式与否、耗时与用量；只存在内存里，重启进程即清空 |
 | 事件 | 切换、失效、限流、恢复、配置变更，可按类型过滤、关键词搜索、暂停实时刷新 |
 | 设置 | 网关、提供商、定价、故障转移、服务、日志、数据、原始 JSON 的完整表单；「定价」分组可逐模型填写单价与峰谷时段，「数据」分组可重置用量统计；底部保存栏统一提交 |
 
@@ -414,6 +415,8 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 | `GET` | `/api/overview` | 看板所需的完整快照（含调用方统计） |
 | `GET` | `/api/capability` | 目录模型的能力排行：匹配 Artificial Analysis Intelligence Index，`?refresh=1` 跳过 10 分钟内存缓存；不落盘 |
 | `GET` | `/api/events` | 事件列表，支持 `?limit=` |
+| `GET` | `/api/live` | 实时输出 SSE：先发 `snapshot`，随后推送 `start` / `delta` / `done` / `clear`；只保留最近的会话，单条输出会截断 |
+| `DELETE` | `/api/live` | 清空内存里的实时输出 |
 | `GET` | `/api/config` | 读取配置：`text`（脱敏 JSON 文本）、`config`（结构化对象，`apiKey` 置空）、`apiKeySet`、Key 状态与路径 |
 | `PUT` | `/api/config` | 保存配置：`{"config":{...}}` 按对象合并保存，或 `{"text":"{...}"}` 走文本（接受注释）；`apiKey` 留空表示保持原值 |
 | `PATCH` | `/api/chain` | 更新上下文：`{"context":{"window":256000,"onOverflow":"reject"}}` |

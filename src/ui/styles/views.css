@@ -592,6 +592,142 @@
 }
 
 /* ============================================================
+   实时输出
+   ============================================================ */
+
+.live-summary {
+  margin-top: 4px;
+}
+
+.live-tools {
+  gap: 12px;
+}
+
+.live-tools .events-search {
+  margin-left: auto;
+}
+
+.live-errors-toggle {
+  white-space: nowrap;
+}
+
+#live-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 16px;
+}
+
+.live-item {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper);
+}
+
+.live-item[data-status="streaming"] {
+  border-color: var(--go);
+}
+
+.live-item[data-status="error"] {
+  border-color: var(--stop);
+}
+
+.live-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.live-time {
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.live-model {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.live-chip {
+  color: var(--ink-soft);
+  font-size: 11.5px;
+}
+
+.live-status {
+  margin-left: auto;
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.live-status[data-status="streaming"] {
+  color: var(--go);
+}
+
+.live-status[data-status="error"] {
+  color: var(--stop);
+}
+
+.live-status[data-status="ok"] {
+  color: var(--ink-soft);
+}
+
+.live-meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--ink-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.live-text {
+  max-height: 420px;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.live-item[data-status="error"] .live-text {
+  display: none;
+}
+
+.live-item[data-status="streaming"] .live-text::after {
+  content: "▍";
+  color: var(--go);
+  animation: live-blink 1s steps(2, start) infinite;
+}
+
+.live-error {
+  margin: 10px 12px 0;
+  padding: 8px 10px;
+  border-left: 2px solid var(--stop);
+  background: var(--stop-soft);
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@keyframes live-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* ============================================================
    设置
    ============================================================ */
 
@@ -1426,6 +1562,23 @@
   .events-search {
     width: 100%;
     margin-left: 0;
+  }
+
+  .live-tools {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .live-tools .events-search {
+    margin-left: 0;
+  }
+
+  .live-status {
+    margin-left: 0;
+  }
+
+  .live-meta {
+    width: 100%;
   }
 
   .event {

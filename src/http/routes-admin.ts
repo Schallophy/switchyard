@@ -87,6 +87,13 @@ export function registerAdminRoutes(router: Router, runtime: Runtime): void {
     ctx.send(200, { events: runtime.events.recent(safeLimit, kind) });
   });
 
+  router.add("GET", "/api/live", (ctx) => streamLiveOutput(ctx, runtime));
+
+  router.add("DELETE", "/api/live", (ctx) => {
+    runtime.liveOutput.clear();
+    ctx.send(200, { ok: true });
+  });
+
   router.add("GET", "/api/config", (ctx) => {
     ctx.send(200, {
       text: sanitizedConfigText(runtime),
@@ -283,6 +290,54 @@ export function registerAdminRoutes(router: Router, runtime: Runtime): void {
     const prompt = typeof body.prompt === "string" && body.prompt.trim() ? body.prompt.trim() : "你好，请回复一句话。";
     const result = await runtime.test(prompt);
     ctx.send(200, result);
+  });
+}
+
+function streamLiveOutput(ctx: Ctx, runtime: Runtime): Promise<void> {
+  const { res } = ctx;
+  res.statusCode = 200;
+  res.setHeader("content-type", "text/event-stream; charset=utf-8");
+  res.setHeader("cache-control", "no-cache, no-transform");
+  res.setHeader("connection", "keep-alive");
+  res.setHeader("x-accel-buffering", "no");
+  res.flushHeaders();
+
+  let closed = false;
+  const send = (event: string, data: unknown): void => {
+    if (closed || res.writableEnded) return;
+    try {
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    } catch {
+      // 客户端断开时 write 可能抛错，交给 close 事件清理。
+    }
+  };
+
+  send("snapshot", {
+    sessions: runtime.liveOutput.recent(),
+    limits: runtime.liveOutput.limits(),
+  });
+  const unsubscribe = runtime.liveOutput.subscribe((event) => send(event.type, event));
+  const ping = setInterval(() => {
+    if (closed || res.writableEnded) return;
+    try {
+      res.write(": ping\n\n");
+    } catch {
+      // 同上。
+    }
+  }, 15_000);
+  ping.unref();
+
+  return new Promise<void>((resolve) => {
+    const cleanup = (): void => {
+      if (closed) return;
+      closed = true;
+      clearInterval(ping);
+      unsubscribe();
+      resolve();
+    };
+    res.once("close", cleanup);
+    res.once("error", cleanup);
+    ctx.req.once("aborted", cleanup);
   });
 }
 

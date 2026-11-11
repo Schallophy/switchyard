@@ -1,7 +1,8 @@
 import { identifyCaller } from "../core/caller.ts";
 import { apiKindForPath } from "../core/api.ts";
+import { extractOutputText } from "../core/output-text.ts";
 import type { Runtime } from "../runtime.ts";
-import type { AttemptRecord, NormalizedError, Usage } from "../types.ts";
+import type { AttemptRecord, NormalizedError } from "../types.ts";
 import { extractUsage } from "../util/usage.ts";
 import { HttpError, type Ctx, type Router } from "./server.ts";
 import { pipeSse } from "./sse.ts";
@@ -52,6 +53,7 @@ export function registerOpenAIRoutes(router: Router, runtime: Runtime): void {
 }
 
 function proxy(ctx: Ctx, runtime: Runtime, path: string): Promise<void> {
+  const started = performance.now();
   const payload = ctx.body;
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new HttpError(400, "请求体必须是 JSON 对象");
@@ -86,6 +88,23 @@ function proxy(ctx: Ctx, runtime: Runtime, path: string): Promise<void> {
       runtime.recordOutcome(result, caller, api);
 
       if (!result.ok) {
+        const lastAttempt = result.attempts[result.attempts.length - 1];
+        const failedModel = lastAttempt?.model ?? requested;
+        runtime.liveOutput
+          .start({
+            api,
+            model: failedModel,
+            provider: runtime.providerIdFor(failedModel) ?? null,
+            caller: caller.label,
+            requested,
+            stream,
+            failovers: result.failovers,
+          })
+          .finish({
+            error: `${result.error.label}：${result.error.message}`,
+            latencyMs: Math.round(performance.now() - started),
+          });
+
         ctx.res.off("close", abort);
         if (result.error.kind === "aborted") {
           ctx.res.destroy();
@@ -113,13 +132,30 @@ function proxy(ctx: Ctx, runtime: Runtime, path: string): Promise<void> {
 
       if (!stream) {
         const text = await result.response.text();
-        let usage: Usage | null = null;
+        let parsed: unknown = null;
         try {
-          usage = extractUsage(JSON.parse(text) as unknown);
+          parsed = JSON.parse(text) as unknown;
         } catch {
-          usage = null;
+          parsed = null;
         }
+        const usage = extractUsage(parsed);
         runtime.markSuccess(result.model, usage, caller, sample, api);
+        runtime.liveOutput
+          .start({
+            api,
+            model: result.model,
+            provider: result.provider ?? runtime.providerIdFor(result.model) ?? null,
+            caller: caller.label,
+            requested,
+            stream: false,
+            failovers: result.failovers,
+          })
+          .finish({
+            text: extractOutputText(api, parsed),
+            usage,
+            bytes: Buffer.byteLength(text),
+            latencyMs: Math.round(performance.now() - started),
+          });
         ctx.res.off("close", abort);
         ctx.sendRaw(200, text, {
           "content-type": "application/json; charset=utf-8",
@@ -130,6 +166,16 @@ function proxy(ctx: Ctx, runtime: Runtime, path: string): Promise<void> {
         return;
       }
 
+      const live = runtime.liveOutput.start({
+        api,
+        model: result.model,
+        provider: result.provider ?? runtime.providerIdFor(result.model) ?? null,
+        caller: caller.label,
+        requested,
+        stream: true,
+        failovers: result.failovers,
+      });
+
       const piped = await pipeSse(ctx.res, result.response, {
         idleTimeoutMs: 120_000,
         signal: controller.signal,
@@ -138,8 +184,15 @@ function proxy(ctx: Ctx, runtime: Runtime, path: string): Promise<void> {
           "x-switchyard-provider": result.provider ?? "",
           "x-switchyard-failovers": String(result.failovers),
         },
+        onData: (chunk) => live.push(chunk),
       });
       runtime.markSuccess(result.model, piped.usage, caller, sample, api);
+      live.finish({
+        usage: piped.usage,
+        bytes: piped.bytes,
+        latencyMs: Math.round(performance.now() - started),
+        error: piped.error,
+      });
       ctx.res.off("close", abort);
       if (piped.error) {
         runtime.logger.warn("stream interrupted", { model: result.model, error: piped.error });

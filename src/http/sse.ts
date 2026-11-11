@@ -6,6 +6,8 @@ export interface PipeOptions {
   idleTimeoutMs?: number;
   signal?: AbortSignal;
   headers?: Record<string, string>;
+  /** 每读到一段解码后的 SSE 文本就回调一次，用于看板的实时输出。 */
+  onData?: (text: string) => void;
 }
 
 export interface PipeResult {
@@ -59,9 +61,17 @@ export async function pipeSse(res: ServerResponse, provider: Response, options: 
       if (done) break;
       if (!value || value.byteLength === 0) continue;
       bytes += value.byteLength;
-      tracker.push(decoder.decode(value, { stream: true }));
+      const text = decoder.decode(value, { stream: true });
+      tracker.push(text);
+      options.onData?.(text);
       await writeChunk(res, Buffer.from(value));
       resetIdle();
+    }
+
+    const tail = decoder.decode();
+    if (tail) {
+      tracker.push(tail);
+      options.onData?.(tail);
     }
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);
