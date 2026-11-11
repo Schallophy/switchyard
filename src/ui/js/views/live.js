@@ -263,6 +263,7 @@ function cardHtml(session) {
     usage ? `输入 ${fmtTokens(Math.max(0, usage.promptTokens - usage.cachedPromptTokens))} · 输出 ${fmtTokens(usage.completionTokens)}` : null,
     session.bytes > 0 ? fmtBytes(session.bytes) : null,
     session.truncated ? "已截断" : null,
+    session.finishReason ? `完成：${esc(session.finishReason)}` : null,
   ]
     .filter(Boolean)
     .map((item) => `<span>${esc(item)}</span>`)

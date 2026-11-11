@@ -19,6 +19,7 @@ export interface LiveOutputSession {
   stream: boolean;
   status: LiveOutputStatus;
   text: string;
+  finishReason: string | null;
   usage: Usage | null;
   bytes: number;
   latencyMs: number;
@@ -39,6 +40,7 @@ export interface LiveOutputStart {
 
 export interface LiveOutputFinish {
   text?: string | null;
+  finishReason?: string | null;
   usage?: Usage | null;
   bytes?: number;
   latencyMs?: number;
@@ -87,6 +89,7 @@ export class LiveOutputLog {
       stream: input.stream,
       status: "streaming",
       text: "",
+      finishReason: null,
       usage: null,
       bytes: 0,
       latencyMs: 0,
@@ -153,6 +156,7 @@ export class LiveOutputLog {
     }
 
     session.status = patch.error ? "error" : "ok";
+    session.finishReason = patch.finishReason ?? null;
     session.usage = patch.usage ?? null;
     session.bytes = patch.bytes ?? session.bytes;
     session.latencyMs = patch.latencyMs ?? session.latencyMs;
@@ -202,12 +206,25 @@ export class LiveOutputHandle {
     if (text) this.#log.append(this.#session, text);
   }
 
+  /** 流式响应结束后的完成原因，未报告则为 null。 */
+  getFinishReason(): string | null {
+    return this.#extractor.getFinishReason();
+  }
+
   finish(patch: LiveOutputFinish = {}): void {
     if (this.#finished) return;
     this.#finished = true;
     const tail = this.#extractor.flush();
     if (tail) this.#log.append(this.#session, tail);
-    this.#log.complete(this.#session, patch);
+    this.#log.complete(this.#session, {
+      text: patch.text,
+      finishReason: patch.finishReason ?? this.getFinishReason(),
+      usage: patch.usage,
+      bytes: patch.bytes,
+      latencyMs: patch.latencyMs,
+      failovers: patch.failovers,
+      error: patch.error,
+    });
   }
 }
 
@@ -215,5 +232,6 @@ function cloneSession(session: LiveOutputSession): LiveOutputSession {
   return {
     ...session,
     usage: session.usage ? { ...session.usage } : null,
+    finishReason: session.finishReason ?? null,
   };
 }

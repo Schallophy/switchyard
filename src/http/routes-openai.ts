@@ -1,6 +1,7 @@
 import { identifyCaller } from "../core/caller.ts";
 import { apiKindForPath } from "../core/api.ts";
 import { extractOutputText } from "../core/output-text.ts";
+import type { ApiKind } from "../config/schema.ts";
 import type { Runtime } from "../runtime.ts";
 import type { AttemptRecord, NormalizedError } from "../types.ts";
 import { extractUsage } from "../util/usage.ts";
@@ -139,6 +140,7 @@ function proxy(ctx: Ctx, runtime: Runtime, path: string): Promise<void> {
           parsed = null;
         }
         const usage = extractUsage(parsed);
+        const finishReason = extractFinishReason(api, parsed);
         runtime.markSuccess(result.model, usage, caller, sample, api);
         runtime.liveOutput
           .start({
@@ -152,6 +154,7 @@ function proxy(ctx: Ctx, runtime: Runtime, path: string): Promise<void> {
           })
           .finish({
             text: extractOutputText(api, parsed),
+            finishReason,
             usage,
             bytes: Buffer.byteLength(text),
             latencyMs: Math.round(performance.now() - started),
@@ -226,6 +229,36 @@ function errorStatus(error: NormalizedError): number {
     default:
       return 503;
   }
+}
+
+/** 从非流式完整响应里提取完成原因，用于「输出」页展示。 */
+function extractFinishReason(api: ApiKind, parsed: unknown): string | null {
+  if (!parsed || typeof parsed !== "object") return null;
+  const record = parsed as Record<string, unknown>;
+
+  if (api === "chat" || api === "completions") {
+    const choices = Array.isArray(record.choices) ? record.choices : [];
+    const first = choices[0];
+    if (first && typeof first === "object") {
+      const fr = (first as Record<string, unknown>).finish_reason;
+      if (typeof fr === "string" && fr) return fr;
+    }
+    return null;
+  }
+
+  if (api === "responses") {
+    const output = Array.isArray(record.output) ? record.output : [];
+    const first = output[0];
+    if (first && typeof first === "object") {
+      const st = (first as Record<string, unknown>).status;
+      if (typeof st === "string" && st) return st;
+    }
+    const st = record.status;
+    if (typeof st === "string" && st) return st;
+    return null;
+  }
+
+  return null;
 }
 
 function summarize(attempts: AttemptRecord[]): Array<Record<string, unknown>> {

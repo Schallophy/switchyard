@@ -32,6 +32,7 @@ export class SseOutputExtractor {
   readonly #api: ApiKind;
   #buffer = "";
   #hasText = false;
+  #finishReason: string | null = null;
 
   constructor(api: ApiKind) {
     this.#api = api;
@@ -66,6 +67,11 @@ export class SseOutputExtractor {
     return text;
   }
 
+  /** 流式响应结束后的完成原因，如 "stop" / "length" / "tool_calls" / "completed"；未报告则为 null。 */
+  getFinishReason(): string | null {
+    return this.#finishReason;
+  }
+
   #block(block: string): string {
     const data = block
       .split(/\r?\n/)
@@ -94,6 +100,8 @@ export class SseOutputExtractor {
         const delta = (choice as Record<string, unknown>).delta;
         if (!delta || typeof delta !== "object") continue;
         out += textFromContent((delta as Record<string, unknown>).content);
+        const fr = (choice as Record<string, unknown>).finish_reason;
+        if (typeof fr === "string" && fr) this.#finishReason = fr;
       }
       return out;
     }
@@ -104,6 +112,8 @@ export class SseOutputExtractor {
         .map((choice) => {
           if (!choice || typeof choice !== "object") return "";
           const text = (choice as Record<string, unknown>).text;
+          const fr = (choice as Record<string, unknown>).finish_reason;
+          if (typeof fr === "string" && fr) this.#finishReason = fr;
           return typeof text === "string" ? text : "";
         })
         .join("");
@@ -116,9 +126,15 @@ export class SseOutputExtractor {
 
       // 有些兼容实现不发 delta，只在完成事件里给全文。
       if (!this.#hasText) {
-        if (type === "response.output_text.done" && typeof record.text === "string") return record.text;
-        if (type === "response.completed" && record.response) {
-          return responsesOutput(record.response as Record<string, unknown>) ?? "";
+        if (type === "response.output_text.done" && typeof record.text === "string") {
+          this.#finishReason = "done";
+          return record.text;
+        }
+        if (type === "response.completed") {
+          this.#finishReason = "completed";
+          if (record.response) {
+            return responsesOutput(record.response as Record<string, unknown>) ?? "";
+          }
         }
       }
     }
