@@ -2,6 +2,7 @@ import type { ApiKind, ChainConfig, ContextConfig, GatewayConfig, ProviderConfig
 import { saveConfig } from "./config/load.ts";
 import { ANONYMOUS_CALLER, CONSOLE_CALLER, type CallerIdentity } from "./core/caller.ts";
 import { apisFor as resolveApis, apiKindForPath, supportsApi as checkApi } from "./core/api.ts";
+import { isThrottled } from "./core/meter.ts";
 import { joinModelCode, splitModelCode } from "./core/model-code.ts";
 import { EventLog } from "./core/events.ts";
 import { LiveOutputLog } from "./core/live-output.ts";
@@ -58,7 +59,7 @@ export interface RuntimeSnapshotModel extends ModelRecord {
 
 export interface ChainSnapshot {
   active: string | null;
-  /** auto 此刻实际会命中的模型：从 active 起第一个可用（非 dead/invalid，或已到自动重试时间）的模型。 */
+  /** auto 此刻实际会命中的模型：从 active 起第一个可用（不在冷却中，且非 dead/invalid 或已到自动重试时间）的模型。 */
   effective: string | null;
   context: ChainConfig["context"];
   /** dead 模型多少分钟后自动重新参与选路；0 表示只能手动重置。 */
@@ -215,7 +216,7 @@ export class Runtime {
     return activeModel(this.config.chain);
   }
 
-  /** auto 此刻实际会命中的模型：从 active 起按列表顺序找第一个可用（失效但已到重试时间的也算）的模型。 */
+  /** auto 此刻实际会命中的模型：从 active 起按列表顺序找第一个可用（冷却中、失效、无效的除外）的模型。 */
   effectiveModel(): string | null {
     const codes = this.chainCodes();
     if (codes.length === 0) return null;
@@ -229,6 +230,7 @@ export class Runtime {
       const health = record?.health ?? "unknown";
       if (health === "invalid") continue;
       if (health === "dead" && (!record || !isDeadRetryDue(record, now, retryMs))) continue;
+      if (record && isThrottled(record, now)) continue;
       return code;
     }
     return null;

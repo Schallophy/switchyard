@@ -159,6 +159,40 @@ test("the effective model skips dead entries after the active one", async () => 
   await runtime.shutdown();
 });
 
+test("the effective model skips models in cooldown", async () => {
+  const { runtime } = await makeRuntime();
+  await runtime.updateChainModels(["dashscope/a", "dashscope/b", "dashscope/c"]);
+  assert.equal(runtime.effectiveModel(), "dashscope/a");
+
+  runtime.store.setHealth("dashscope/a", "alive", {
+    reason: "限流",
+    throttledUntil: new Date(Date.now() + 60_000).toISOString(),
+  });
+  assert.equal(runtime.effectiveModel(), "dashscope/b", "冷却中的首选让路");
+
+  const calls: string[] = [];
+  runtime.client.attempt = async (_path, model) => {
+    calls.push(model);
+    return { ok: true, response: new Response("{}"), latencyMs: 1, providerId: "dashscope" };
+  };
+  const body = { messages: [{ role: "user", content: "hi" }] };
+  const cooling = await runtime.requestThrough({ path: "chat/completions", model: "auto", body });
+  assert.equal(cooling.result.ok, true);
+  assert.deepEqual(calls, ["b"], "auto 不会先打冷却中的模型");
+
+  // 冷却结束后自动重新入链，并回到首选位置
+  runtime.store.setHealth("dashscope/a", "alive", {
+    reason: null,
+    throttledUntil: new Date(Date.now() - 1_000).toISOString(),
+  });
+  assert.equal(runtime.effectiveModel(), "dashscope/a");
+  const reheated = await runtime.requestThrough({ path: "chat/completions", model: "auto", body });
+  assert.equal(reheated.result.ok, true);
+  assert.deepEqual(calls, ["b", "a"]);
+
+  await runtime.shutdown();
+});
+
 test("the current output follows the model that actually responded", async () => {
   const { runtime } = await makeRuntime();
   await runtime.updateChainModels(["dashscope/a", "dashscope/b"]);

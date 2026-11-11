@@ -433,11 +433,18 @@ function railSignature(data) {
     local.batch ? "1" : "0",
     ...data.chain.models.map(
       (model) =>
-        `${model.code}:${model.health}:${model.throttledUntil || ""}:${model.checkedAt || ""}:${
-          model.failures || 0
-        }`,
+        `${model.code}:${model.health}:${coolingNow(model) ? "1" : "0"}:${model.throttledUntil || ""}:${
+          model.checkedAt || ""
+        }:${model.failures || 0}`,
     ),
   ].join("|");
+}
+
+/** 冷却是否仍然生效；倒计时结束后签名变化，触发一次重绘。 */
+function coolingNow(model) {
+  if (!model.throttledUntil) return false;
+  const until = Date.parse(model.throttledUntil);
+  return Number.isFinite(until) && until > Date.now();
 }
 
 function eventsSignature(data) {

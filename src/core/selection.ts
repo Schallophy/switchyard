@@ -4,7 +4,7 @@ import { isThrottled } from "./meter.ts";
 import { splitModelCode } from "./model-code.ts";
 
 /**
- * - auto：使用当前选中的模型，失败后按模型列表的顺序回退
+ * - auto：从首选模型开始，失败后按模型列表的顺序回退
  * - direct：客户端点名了列表里的模型，直接发给它，不做回退
  * - passthrough：列表里没有这个模型，原样透传
  */
@@ -50,7 +50,7 @@ export interface SelectionInput {
   chain: ChainConfig;
   getRecord: (code: string) => ModelRecord | undefined;
   now: number;
-  /** 从这个模型开始回退（通常是当前选中的模型）。 */
+  /** 从这个模型开始回退（通常是首选模型）；不在列表里时按原顺序。 */
   start?: string | null;
   accepts?: (code: string) => boolean;
   /** dead 模型经过多少毫秒后重新参与选路；0 或省略表示不自动重试。 */
@@ -66,26 +66,27 @@ export function isDeadRetryDue(record: ModelRecord, now: number, retryMs: number
 }
 
 export function selectCandidates(input: SelectionInput): Candidate[] {
-  const rows: Array<{ code: string; record: ModelRecord; order: number; score: number }> = [];
+  const candidates: Candidate[] = [];
   const retryMs = input.retryDeadAfterMs ?? 0;
 
-  input.chain.models.forEach((code, order) => {
+  for (const code of rotateFrom(input.chain.models, input.start)) {
     const record = input.getRecord(code);
-    if (!record) return;
-    if (input.accepts && !input.accepts(code)) return;
-    if (record.health === "invalid") return;
-    if (record.health === "dead" && !isDeadRetryDue(record, input.now, retryMs)) return;
-    let score = 0;
-    if (isThrottled(record, input.now)) score += 2;
-    rows.push({ code, record, order, score });
-  });
-
-  rows.sort((a, b) => a.score - b.score || a.order - b.order);
-
-  if (input.start) {
-    const position = rows.findIndex((row) => row.code === input.start);
-    if (position > 0) rows.push(...rows.splice(0, position));
+    if (!record) continue;
+    if (input.accepts && !input.accepts(code)) continue;
+    if (record.health === "invalid") continue;
+    if (record.health === "dead" && !isDeadRetryDue(record, input.now, retryMs)) continue;
+    // 冷却中的模型暂时退出链路，冷却到期后自动重新参与
+    if (isThrottled(record, input.now)) continue;
+    candidates.push({ code, record });
   }
 
-  return rows.map((row) => ({ code: row.code, record: row.record }));
+  return candidates;
+}
+
+/** 从 start 起把列表轮转一圈；start 不在列表里时保持原顺序。 */
+function rotateFrom(models: string[], start?: string | null): string[] {
+  if (!start) return models;
+  const position = models.indexOf(start);
+  if (position <= 0) return models;
+  return [...models.slice(position), ...models.slice(0, position)];
 }

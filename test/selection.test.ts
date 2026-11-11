@@ -115,14 +115,18 @@ test("invalid models never come back automatically", () => {
   assert.deepEqual(pick(["a", "b"], records, { now, retryDeadAfterMs: 60_000 }), ["b"]);
 });
 
-test("throttled models are deprioritized but still usable", () => {
-  const now = Date.now();
+test("throttled models leave the chain until the cooldown ends", () => {
+  const now = Date.parse("2026-11-10T12:00:00.000Z");
   const records = {
     a: record("a", { throttledUntil: new Date(now + 60_000).toISOString() }),
     b: record("b"),
     c: record("c"),
   };
-  assert.deepEqual(pick(["a", "b", "c"], records, { now }), ["b", "c", "a"]);
+  // 冷却中的首选模型让路，不再出现在候选里
+  assert.deepEqual(pick(["a", "b", "c"], records, { now, start: "a" }), ["b", "c"]);
+  assert.deepEqual(pick(["a", "b", "c"], records, { now }), ["b", "c"]);
+  // 冷却到期后自动回到链首
+  assert.deepEqual(pick(["a", "b", "c"], records, { now: now + 60_001, start: "a" }), ["a", "b", "c"]);
 });
 
 test("starting from a model rotates the list from that point", () => {
@@ -132,7 +136,7 @@ test("starting from a model rotates the list from that point", () => {
 
 test("starting from a dead model begins at the next usable model", () => {
   const records = { a: record("a"), b: record("b", { health: "dead" }), c: record("c") };
-  assert.deepEqual(pick(["a", "b", "c"], records, { start: "b" }), ["a", "c"]);
+  assert.deepEqual(pick(["a", "b", "c"], records, { start: "b" }), ["c", "a"]);
 });
 
 test("an empty list yields no candidates", () => {

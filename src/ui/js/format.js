@@ -202,8 +202,8 @@ export function statusOf(model, chain, now = Date.now()) {
       text: "冷却中",
       until: throttleUntil,
       prefix: "",
-      suffix: "",
-      done: "冷却结束",
+      suffix: "后入链",
+      done: "已入链",
     };
   }
 

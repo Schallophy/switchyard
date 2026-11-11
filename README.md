@@ -12,7 +12,7 @@ Switchyard 不绑定任何厂商。默认提供商是阿里云百炼（DashScope
 - **按能力选路**：每个模型可声明 `chat` / `responses` / `completions` / `embeddings` 能力；`/v1/chat/completions` 只在 chat 模型中选，`/v1/responses` 只在 responses 模型中选，不做协议转译。
 - **上下文保护**：模型列表共用一个上下文窗口（默认 256K），超出时默认在转发前返回 400，避免把注定失败的请求送到提供商。
 - **调用方统计**：按请求携带的 Bearer Token 自动归类，分别统计各客户端的请求、失败、切换与真实 Token 消耗（输入不含缓存命中，并显示缓存命中率）。
-- **健康状态机**：`unknown → alive / dead / invalid`，限流进入冷却而不污染健康状态；重启后状态持久化。
+- **健康状态机**：`unknown → alive / dead / invalid`，限流进入冷却而不污染健康状态；冷却期间暂时退出链路，到期自动重新入链；重启后状态持久化。
 - **模型排行**：在看板「排行」页按 Artificial Analysis 的 Intelligence Index 查看目录模型的能力排序；勾选多个模型后可以只看已选并按能力从高到低排列，逐行添加，不会自动加入模型列表。
 - **管理看板**：模型、排行、用量、事件、设置五个页面，主题始终跟随系统深浅色，全部本地访问。
 - **两条等价的配置路径**：有看板的部署可以把模型列表、提供商、随机参数全部在界面上配置；`ui.enabled=false` 时看板彻底关闭，所有配置只在 `config.json` 里，能力不缩水。
@@ -172,13 +172,12 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 
 ### 选路
 
-1. 解析 `model`：`auto` 从当前输出模型开始；点名列表里的模型则只发给它；其他模型原样透传。
+1. 解析 `model`：`auto` 从首选模型（`chain.active`）开始；点名列表里的模型则只发给它；其他模型原样透传。
 2. `auto` 时按当前请求端点过滤：只保留在 `modelApis` 中声明了对应能力的模型。
-3. 过滤掉 `invalid` 模型，以及尚未到重试时间的 `dead` 模型（失效时间超过 `chain.retryDeadAfterMinutes` 后重新参与选路）。
-4. 对剩余模型排序：正常模型保持列表顺序；处于限流冷却的模型排到后面。
-5. `auto` 从当前选中的模型（`chain.active`）开始按序尝试，每次尝试最多 `failover.maxAttempts` 次；点名模型只尝试一次。
+3. 从首选模型起把列表轮转一圈，再过滤掉 `invalid`、尚未到重试时间的 `dead`（失效时间超过 `chain.retryDeadAfterMinutes` 后重新参与选路）以及仍在限流冷却中的模型。
+4. 剩余模型按轮转后的顺序依次尝试，每次尝试最多 `failover.maxAttempts` 次；点名模型只尝试一次。冷却到期的模型会自动重新入链。
 
-**怎么看当前实际在用哪个模型**：看板「模型」页的「当前输出」实时跟随最近一次真正产出响应的模型——包括 auto 故障转移后实际承接的模型，以及直连或透传请求点名的模型；还没有请求时（或重启后）显示 `chain.effective`，即 auto 此刻会命中的模型。如果最近输出和下一次 auto 的目标不同，标题下方会注明「auto 下一站 X」。`chain.active` 只决定 auto 的起点，暂时不可用时 `effective` 会顺延，并注明「首选 X 暂不可用，恢复后自动切回」。事件流里的「切换」事件记录 `qwen3.8-flash（额度耗尽）→ qwen3.8-27b（切换 1 次）` 这样的明细。API 侧另有响应头 `x-switchyard-model` / `x-switchyard-provider` / `x-switchyard-failovers`。
+**怎么看当前实际在用哪个模型**：看板「模型」页的「当前输出」实时跟随最近一次真正产出响应的模型——包括 auto 故障转移后实际承接的模型，以及直连或透传请求点名的模型；还没有请求时（或重启后）显示 `chain.effective`，即 auto 此刻会命中的模型。如果最近输出和下一次 auto 的目标不同，标题下方会注明「auto 下一站 X」。`chain.active` 只决定 auto 的起点，暂时不可用（包括冷却中）时 `effective` 会顺延，并注明「首选 X 暂不可用，恢复后自动切回」。事件流里的「切换」事件记录 `qwen3.8-flash（额度耗尽）→ qwen3.8-27b（切换 1 次）` 这样的明细。API 侧另有响应头 `x-switchyard-model` / `x-switchyard-provider` / `x-switchyard-failovers`。
 
 ### API 能力
 
@@ -205,7 +204,7 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 | 提供商信号 | 判定 | 动作 |
 | --- | --- | --- |
 | `403 AllocationQuota.FreeTierOnly` / 免费额度耗尽 | `quota_exhausted` | 标记模型 `dead`，立即切换；`chain.retryDeadAfterMinutes` 后自动重试（默认 1 天） |
-| `429 Throttling.*` / rate limit | `throttled` | 进入冷却，稍后仍可用，**不**标记失效 |
+| `429 Throttling.*` / rate limit | `throttled` | 进入冷却，冷却期间暂时退出链路；`failover.throttleCooldownMs` 后自动重新入链，**不**标记失效 |
 | `404 ModelNotFound` / 模型不存在 | `model_invalid` | 标记 `invalid`，不再尝试 |
 | `401 InvalidApiKey` / 签名错误 | `auth` | 终止本次故障转移，返回 401 |
 | 裸 `404` | `provider` | 视为 base URL 配置错误，不牵连模型 |
@@ -336,7 +335,7 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 | `providers[].apiKeyEnv` | 读取 API Key 的环境变量名；优先级高于同项的 `apiKey` |
 | `providers[].injectStreamUsage` | 流式聊天请求未显式设置时自动注入 `stream_options.include_usage` |
 | `failover.maxAttempts` | 单次请求最多尝试的模型数 |
-| `failover.throttleCooldownMs` | 限流冷却时长；冷却结束后模型自动回到候选序列 |
+| `failover.throttleCooldownMs` | 限流冷却时长；冷却期间模型暂时退出选路，结束后自动回到候选序列 |
 | `pricing.currency` | 成本展示币种：`CNY` / `USD` / `EUR` / `GBP` / `JPY` / `KRW`，其他值按代码前缀显示 |
 | `pricing.unit` | 单价的 token 基数，默认 `1000000`（每百万 token） |
 | `pricing.models.<code>.tiers[]` | 分时段价格：`from` / `to`（本地时间 `HH:MM`，`from == to` 表示全天）、`input`、`cachedInput`、`output`。时间段必须覆盖一整天；`"*"` 可作为所有模型的兜底 |
