@@ -802,14 +802,20 @@ export class Runtime {
     for (const warning of warnings) this.logger.info("config", { warning });
   }
 
-  async applyConfig(next: GatewayConfig): Promise<string[]> {
+  async applyConfig(next: GatewayConfig, options: { persist?: boolean } = {}): Promise<string[]> {
     const previousPort = this.config.port;
     const previousHost = this.config.host;
     this.config = next;
-    await saveConfig(this.configPath, next);
+    if (!process.env.SWITCHYARD_LOG_LEVEL) this.logger.setLevel(next.log.level);
+    this.logger.setRotation(next.log.maxBytes, next.log.maxFiles);
+    if (options.persist !== false) await saveConfig(this.configPath, next);
     this.store.ensure(this.chainCodes());
     this.store.pruneModels(this.chainCodes());
-    this.events.push({ kind: "config", level: "info", message: "配置已保存" });
+    this.events.push({
+      kind: "config",
+      level: "info",
+      message: options.persist === false ? "配置已从文件重新加载" : "配置已保存",
+    });
     const warnings: string[] = [];
     if (previousPort !== next.port) warnings.push("端口变更需要重启进程后生效");
     if (previousHost !== next.host) warnings.push("监听地址变更需要重启进程后生效");

@@ -82,6 +82,8 @@ const logger: Logger = {
   error: () => undefined,
   access: () => undefined,
   flush: async () => undefined,
+  setLevel: () => undefined,
+  setRotation: () => undefined,
   child: () => logger,
 };
 
@@ -296,4 +298,17 @@ test("a commented config is not rewritten, only reported", async () => {
   assert.ok(loaded.migrations.length > 0);
   assert.deepEqual(loaded.config.chain.models, ["dashscope/qwen3.8-27b"]);
   assert.equal(await readFile(file, "utf8"), text);
+});
+
+test("applying a reloaded config does not rewrite the file", async () => {
+  const { runtime, dir } = await makeRuntime();
+  const file = join(dir, "config.json");
+  const before = await readFile(file, "utf8");
+  const next = JSON.parse(JSON.stringify(runtime.config)) as typeof runtime.config;
+  next.chain.context.window = 128_000;
+  const warnings = await runtime.applyConfig(next, { persist: false });
+  assert.deepEqual(warnings, []);
+  assert.equal(runtime.config.chain.context.window, 128_000);
+  assert.equal(await readFile(file, "utf8"), before);
+  await runtime.shutdown();
 });

@@ -517,7 +517,7 @@ function logPanel() {
     <section class="group">
       <div class="group-head">
         <h2>日志</h2>
-        <p>日志级别和输出文件。修改后立即生效。</p>
+        <p>日志级别、输出文件与轮转策略。修改后立即生效。</p>
       </div>
       <div class="fields">
         <label class="field">
@@ -542,6 +542,18 @@ function logPanel() {
           <span class="field-hint">${
             dataDir ? `数据目录：${esc(dataDir)}` : "留空时使用数据目录下的 switchyard.log。"
           }</span>
+        </label>
+        <label class="field">
+          <span class="field-label">轮转大小（MB）</span>
+          <input class="input" type="number" min="0" max="10240" step="1" data-path="log.maxBytes" data-scale="1048576" value="${Math.round(
+            ((config.log.maxBytes ?? 0) / 1_048_576) * 100,
+          ) / 100}">
+          <span class="field-hint">0 表示不轮转；默认 10 MB。</span>
+        </label>
+        <label class="field">
+          <span class="field-label">保留份数</span>
+          <input class="input" type="number" min="0" max="100" step="1" data-path="log.maxFiles" value="${config.log.maxFiles ?? 5}">
+          <span class="field-hint">轮转后保留的旧文件数量（.1 … .N）。</span>
         </label>
       </div>
     </section>

@@ -162,7 +162,7 @@ test("ui / server / log blocks fall back to safe defaults", () => {
   assert.deepEqual(result.config.ui, { enabled: true });
   assert.equal(result.config.server.maxBodyBytes, 16 * 1024 * 1024);
   assert.equal(result.config.server.cors, true);
-  assert.deepEqual(result.config.log, { level: "info", file: "" });
+  assert.deepEqual(result.config.log, { level: "info", file: "", maxBytes: 10 * 1024 * 1024, maxFiles: 5 });
 });
 
 test("invalid server / ui / log settings are rejected", () => {
@@ -380,4 +380,16 @@ test("responses chaining defaults to off and validates its limits", () => {
   assert.equal(broken.ok, false);
   assert.ok(broken.errors.some((error) => error.includes("responsesChaining.ttlMinutes")));
   assert.ok(broken.errors.some((error) => error.includes("responsesChaining.maxSessions")));
+});
+
+test("log rotation defaults to 10 MB with five copies and validates bounds", () => {
+  const config = defaultConfig();
+  const defaults = normalizeConfig(config);
+  assert.equal(defaults.ok, true);
+  assert.equal(defaults.config.log.maxBytes, 10 * 1024 * 1024);
+  assert.equal(defaults.config.log.maxFiles, 5);
+
+  const bad = JSON.parse(JSON.stringify(config)) as Record<string, any>;
+  bad.log = { maxBytes: -1, maxFiles: 999 };
+  assert.equal(normalizeConfig(bad).ok, false);
 });

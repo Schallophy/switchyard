@@ -52,7 +52,14 @@ export interface LogConfig {
   level: LogLevelName;
   /** 空字符串表示使用数据目录下的 switchyard.log。 */
   file: string;
+  /** 单个文件的上限（字节）；0 表示不轮转。 */
+  maxBytes: number;
+  /** 轮转后保留的旧文件数量（不含当前文件）。 */
+  maxFiles: number;
 }
+
+export const DEFAULT_LOG_MAX_BYTES = 10 * 1024 * 1024;
+export const DEFAULT_LOG_MAX_FILES = 5;
 
 export const DEFAULT_MAX_BODY_BYTES = 16 * 1024 * 1024;
 
@@ -174,6 +181,8 @@ export function defaultConfig(): GatewayConfig {
     log: {
       level: "info",
       file: "",
+      maxBytes: DEFAULT_LOG_MAX_BYTES,
+      maxFiles: DEFAULT_LOG_MAX_FILES,
     },
     chain: {
       active: "",
@@ -747,7 +756,12 @@ export function normalizeConfig(input: unknown): NormalizeResult {
   let level: LogLevelName = defaults.log.level;
   if (typeof rawLevel === "string" && isLogLevel(rawLevel)) level = rawLevel;
   else if (rawLevel !== undefined) errors.push("log.level 只能是 debug / info / warn / error");
-  config.log = { level, file: readString(log, "file", "") };
+  config.log = {
+    level,
+    file: readString(log, "file", ""),
+    maxBytes: readNumber(log, "maxBytes", defaults.log.maxBytes, 0, 10 * 1024 * 1024 * 1024, "log.maxBytes", errors),
+    maxFiles: Math.trunc(readNumber(log, "maxFiles", defaults.log.maxFiles, 0, 100, "log.maxFiles", errors)),
+  };
 
   if (config.chain.models.length === 0) {
     warnings.push("模型列表里还没有任何模型：配好提供商后从「模型目录」加入，或直接在 chain.models 里填写");

@@ -75,8 +75,14 @@ cp .env.example .env       # 1. 填 DASHSCOPE_API_KEY=sk-...
   - Windows：用 [NSSM](https://nssm.cc/) 注册为服务，`nssm set switchyard AppExit Default Restart`，崩溃或重启机器后自动拉起；
   - Linux：systemd unit，设置 `Restart=always`、`Environment=SWITCHYARD_CONFIG=/etc/switchyard/config.json`；
   - 容器：`restart: unless-stopped`，`STOPSIGNAL SIGTERM`，数据目录挂载到卷。
-- 探活：`GET /health` 返回 `{"status":"ok","uptimeSeconds":...}`，可直接给负载均衡或监控使用。
-- 日志按 JSON Lines 写入 `<数据目录>/switchyard.log`，长期运行请交给外部轮转（logrotate、NSSM 的日志轮转，或收集容器 stdout）。
+- 探活：`GET /health` 返回 `status`、版本、uptime、当前模型、模型可用数、提供商/Key 数，可直接给负载均衡或监控使用：
+
+  ```json
+  {"status":"ok","version":"0.1.0","uptimeSeconds":3600,"bootedAt":"...","model":"qianwenai/deepseek-v4.1-flash-1017","models":{"total":1,"alive":1,"dead":0},"providers":{"total":2,"configured":2}}
+  ```
+- 日志按 JSON Lines 写入 `<数据目录>/switchyard.log`，内置轮转：默认单文件 10 MB、保留 5 份（`switchyard.log.1` … `.5`），由 `log.maxBytes` / `log.maxFiles` 调整；设 `maxBytes: 0` 关闭轮转。轮转由程序完成，不需要 logrotate。
+- 配置热加载：直接编辑 `config.json` 会自动生效（监听文件变化，250ms 防抖），日志里输出一条 `配置已重新加载（文件变更）`；POSIX 上也可以 `kill -HUP <pid>`。设置 `SWITCHYARD_CONFIG_WATCH=0` 可关闭监听。看板保存本身已经即时生效，不会触发多余的重新加载。
+- 热加载时如果新配置校验失败（JSON 写坏、端口非法等），会记录错误并继续使用旧配置，进程不会退出。
 
 ### Key 从哪来
 
@@ -251,7 +257,9 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
   },
   "log": {
     "level": "info",            // debug / info / warn / error
-    "file": ""                  // 留空写入数据目录的 switchyard.log
+    "file": "",                 // 留空写入数据目录的 switchyard.log
+    "maxBytes": 10485760,       // 单文件上限，0 = 不轮转
+    "maxFiles": 5               // 保留 switchyard.log.1 … .5
   },
   "chain": {
     "active": "dashscope/qwen3.8-27b",       // 当前输出模型，必须在 models 里
@@ -313,6 +321,8 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 | `ui.enabled` | `false` 时不再提供看板静态资源，配置只能走 `config.json` 与 `/api/config` |
 | `log.level` | `debug` / `info` / `warn` / `error`；`SWITCHYARD_LOG_LEVEL` 优先级更高 |
 | `log.file` | 日志文件路径，留空为 `<数据目录>/switchyard.log` |
+| `log.maxBytes` | 单个日志文件上限（字节），默认 `10485760`（10 MB）；`0` 表示不轮转 |
+| `log.maxFiles` | 轮转后保留的旧文件数（`.1` … `.N`），默认 `5`；`0` 表示只保留当前文件 |
 | `chain.active` | 当前输出模型（`提供商/模型名`）；`auto` 请求从这里开始。必须在 `chain.models` 里，否则回落到第一个模型 |
 | `chain.models` | 候选模型列表，顺序即优先级；每项都绑定提供商，写成 `提供商/模型名` |
 | `chain.context.window` | 模型列表共用的上下文窗口，默认 `256000` |
@@ -342,6 +352,7 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 | `SWITCHYARD_CONFIG` | 配置文件路径，默认 `./config.json` |
 | `SWITCHYARD_DATA_DIR` | 数据目录，默认 `./data` |
 | `SWITCHYARD_LOG_LEVEL` | `debug` / `info` / `warn` / `error` |
+| `SWITCHYARD_CONFIG_WATCH` | 设为 `0` 关闭 `config.json` 文件监听（默认开启） |
 
 ### 成本估算
 
@@ -394,7 +405,7 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `GET` | `/health` | 存活与版本 |
+| `GET` | `/health` | 存活检查：状态、版本、uptime、当前模型、模型与提供商统计 |
 | `GET` | `/api/overview` | 看板所需的完整快照（含调用方统计） |
 | `GET` | `/api/events` | 事件列表，支持 `?limit=` |
 | `GET` | `/api/config` | 读取配置：`text`（脱敏 JSON 文本）、`config`（结构化对象，`apiKey` 置空）、`apiKeySet`、Key 状态与路径 |

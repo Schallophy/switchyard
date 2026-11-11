@@ -9,7 +9,21 @@ const EVENT_KINDS: EventKind[] = ["start", "failover", "dead", "throttle", "revi
 
 export function registerAdminRoutes(router: Router, runtime: Runtime): void {
   router.add("GET", "/health", (ctx) => {
-    ctx.send(200, { status: "ok", uptimeSeconds: uptimeSeconds(runtime), version: VERSION });
+    const chain = runtime.chainSnapshot();
+    const keys = runtime.providerKeyInfos();
+    ctx.send(
+      200,
+      {
+        status: "ok",
+        version: VERSION,
+        uptimeSeconds: uptimeSeconds(runtime),
+        bootedAt: runtime.bootedAt.toISOString(),
+        model: runtime.activeModel(),
+        models: { total: chain.models.length, alive: chain.alive, dead: chain.dead },
+        providers: { total: keys.length, configured: keys.filter((item) => item.configured).length },
+      },
+      { "cache-control": "no-store" },
+    );
   });
 
   router.add("GET", "/api/overview", (ctx) => {

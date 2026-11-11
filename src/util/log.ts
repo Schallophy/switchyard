@@ -1,4 +1,4 @@
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -16,6 +16,10 @@ export interface Logger {
   access(method: string, path: string, status: number, ms: number): void;
   /** 等文件日志写完，退出前调用，避免最后几行丢失。 */
   flush(): Promise<void>;
+  /** 运行期调整级别（看板保存或热加载时使用）。 */
+  setLevel(level: LogLevel): void;
+  /** 运行期调整轮转策略。 */
+  setRotation(maxBytes: number, maxFiles: number): void;
   child(bindings: LogFields): Logger;
 }
 
@@ -85,23 +89,66 @@ export interface LoggerOptions {
   level?: LogLevel;
   file?: string;
   pretty?: boolean;
+  /** 单个日志文件的上限（字节）；0 或省略表示不轮转。 */
+  maxBytes?: number;
+  /** 轮转后保留的旧文件数量（不含当前文件）。 */
+  maxFiles?: number;
 }
 
 export function createLogger(options: LoggerOptions = {}): Logger {
-  const level = options.level ?? "info";
+  let level = options.level ?? "info";
   const pretty = options.pretty ?? true;
+  let maxBytes = Math.max(0, Math.trunc(options.maxBytes ?? 0));
+  let maxFiles = Math.max(0, Math.trunc(options.maxFiles ?? 0));
   let queue: Promise<unknown> = Promise.resolve();
   let directoryReady: Promise<unknown> | null = null;
+  /** 当前文件的字节数；首次写入时 stat 获取，之后按写入量累加。 */
+  let size: number | null = null;
+
+  async function currentSize(file: string): Promise<number> {
+    if (size !== null) return size;
+    try {
+      size = (await stat(file)).size;
+    } catch {
+      size = 0;
+    }
+    return size;
+  }
+
+  async function rotate(file: string): Promise<void> {
+    if (maxFiles <= 0) {
+      await rm(file, { force: true });
+      size = 0;
+      return;
+    }
+    await rm(`${file}.${maxFiles}`, { force: true });
+    for (let index = maxFiles - 1; index >= 1; index -= 1) {
+      await rename(`${file}.${index}`, `${file}.${index + 1}`).catch(() => undefined);
+    }
+    await rename(file, `${file}.1`).catch(() => undefined);
+    size = 0;
+  }
 
   function append(record: Record<string, unknown>): void {
     if (!options.file) return;
-    const line = JSON.stringify(record);
+    const line = `${JSON.stringify(record)}\n`;
+    const bytes = Buffer.byteLength(line);
     const file = options.file;
     directoryReady ??= mkdir(dirname(file), { recursive: true });
     queue = queue
       .then(() => directoryReady)
-      .then(() => appendFile(file, `${line}\n`))
-      .catch(() => undefined);
+      .then(async () => {
+        const current = await currentSize(file);
+        if (maxBytes > 0 && current > 0 && current + bytes > maxBytes) {
+          await rotate(file);
+        }
+        await appendFile(file, line);
+        size = (size ?? 0) + bytes;
+      })
+      .catch(() => {
+        // 写失败（磁盘满、权限变化等）时重建大小缓存，下一次重新 stat
+        size = null;
+      });
   }
 
   function write(levelName: LogLevel, bindings: LogFields, message: string, fields?: LogFields): void {
@@ -144,6 +191,13 @@ export function createLogger(options: LoggerOptions = {}): Logger {
       },
       flush: async () => {
         await queue;
+      },
+      setLevel: (next) => {
+        level = next;
+      },
+      setRotation: (bytes, files) => {
+        maxBytes = Math.max(0, Math.trunc(bytes));
+        maxFiles = Math.max(0, Math.trunc(files));
       },
       child: (extra) => make({ ...bindings, ...extra }),
     };
