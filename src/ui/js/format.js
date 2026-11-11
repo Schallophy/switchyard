@@ -89,7 +89,14 @@ export function fmtWindow(tokens) {
     const millions = value / 1_000_000;
     return `${trimDecimal(millions)}M`;
   }
-  if (value >= 1_000) return `${Math.round(value / 1_000)}K`;
+  if (value >= 1_000) {
+    // 上下文窗口习惯按 2 的幂称呼（262144 叫 256K），但 200000 这类十进制值
+    // 也应显示成 200K；先取能整除的十进制，再退到整除的二进制。
+    const decimal = value / 1_000;
+    if (Number.isInteger(decimal)) return `${decimal}K`;
+    if (value % 1024 === 0) return `${value / 1024}K`;
+    return `${Math.round(decimal)}K`;
+  }
   return fmtInt(value);
 }
 
