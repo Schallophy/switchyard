@@ -861,24 +861,6 @@
   margin-bottom: 10px;
 }
 
-.add-filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-}
-
-.add-filters .chips {
-  flex: 1;
-}
-
-.add-provider {
-  width: auto;
-  min-width: 150px;
-  max-width: 220px;
-  margin-left: auto;
-}
-
 .catalog-list {
   padding: 0 20px;
 }
@@ -1285,9 +1267,5 @@
     max-width: calc(100vw - 24px);
     height: min(88dvh, 900px);
     max-height: 92dvh;
-  }
-
-  .add-provider {
-    max-width: none;
   }
 }

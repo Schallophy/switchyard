@@ -911,7 +911,7 @@ function openApis(code, ctx) {
 /* ---------- add model sheet ---------- */
 
 function openAddSheet(ctx) {
-  local.add = { query: "", filter: "untracked", provider: "", selected: new Set() };
+  local.add = { query: "", provider: "", selected: new Set() };
 
   const dialog = openDialog({
     title: "添加模型",
@@ -919,14 +919,9 @@ function openAddSheet(ctx) {
     body: `
       <div class="sheet-tools">
         <input class="input" id="add-query" type="search" placeholder="搜索模型 code 或厂商" autocomplete="off">
-        <div class="add-filters">
-          <div class="chips" id="add-filters">
-            <button class="chip" type="button" data-filter="untracked" aria-pressed="true">未加入</button>
-          </div>
-          <select class="select add-provider" id="add-provider" aria-label="按提供商筛选">
-            ${catalogProviderOptions()}
-          </select>
-        </div>
+        <select class="select" id="add-provider" aria-label="按提供商筛选">
+          ${catalogProviderOptions()}
+        </select>
       </div>
       <div id="catalog-wrap">${catalogInner()}</div>
     `,
@@ -968,8 +963,6 @@ function filteredCatalog() {
   const query = local.add.query.trim().toLowerCase();
 
   return entries.filter((entry) => {
-    if (local.add.filter === "untracked" && entry.tracked) return false;
-    if (local.add.filter === "alive" && entry.health !== "alive") return false;
     if (local.add.provider && entry.provider !== local.add.provider) return false;
     if (query) {
       const haystack = `${entry.code} ${entry.upstream || ""} ${entry.family || ""} ${entry.provider || ""}`.toLowerCase();
@@ -1031,7 +1024,6 @@ function addFootHtml() {
 
 function bindAdd(node, ctx) {
   const query = node.querySelector("#add-query");
-  const filters = node.querySelector("#add-filters");
   const providerFilter = node.querySelector("#add-provider");
   const wrap = node.querySelector("#catalog-wrap");
   const foot = node.querySelector("#add-foot");
@@ -1048,16 +1040,6 @@ function bindAdd(node, ctx) {
 
   query.addEventListener("input", () => {
     local.add.query = query.value;
-    rerenderList();
-  });
-
-  filters.addEventListener("click", (event) => {
-    const chip = event.target.closest("[data-filter]");
-    if (!chip) return;
-    local.add.filter = chip.dataset.filter;
-    for (const item of filters.querySelectorAll("[data-filter]")) {
-      item.setAttribute("aria-pressed", String(item === chip));
-    }
     rerenderList();
   });
 
