@@ -352,7 +352,7 @@ function providerHtml(provider, index) {
   const key = keyStatus(provider);
 
   return `
-    <details class="provider" data-provider-index="${index}" ${index === 0 ? "open" : ""}>
+    <details class="provider" data-provider-index="${index}">
       <summary>
         <span class="provider-id">${esc(provider.id)}</span>
         <span class="provider-label">${esc(provider.label)}</span>
