@@ -378,7 +378,11 @@ function toolCallHtml(call) {
       case "write": {
         line(parsed.path ?? parsed.filePath ?? parsed.file_path, "live-call-path");
         if (typeof parsed.content === "string") {
-          note(`写入 ${fmtInt(countLines(parsed.content))} 行 · ${fmtInt(parsed.content.length)} 字符`);
+          parts.push(
+            `<p class="live-call-note live-call-stat"><span class="live-call-add">+${fmtInt(
+              countLines(parsed.content),
+            )}</span><span>${fmtInt(parsed.content.length)} 字符</span></p>`,
+          );
         }
         break;
       }
