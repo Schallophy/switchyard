@@ -1,6 +1,6 @@
 import { identifyCaller } from "../core/caller.ts";
 import { apiKindForPath } from "../core/api.ts";
-import { extractOutputText } from "../core/output-text.ts";
+import { extractOutputText, extractToolCalls } from "../core/output-text.ts";
 import type { ApiKind } from "../config/schema.ts";
 import type { Runtime } from "../runtime.ts";
 import type { AttemptRecord, NormalizedError } from "../types.ts";
@@ -154,6 +154,7 @@ function proxy(ctx: Ctx, runtime: Runtime, path: string): Promise<void> {
           })
           .finish({
             text: extractOutputText(api, parsed),
+            toolCalls: extractToolCalls(api, parsed),
             finishReason,
             raw: text,
             usage,

@@ -140,6 +140,47 @@ test("truncates and marks an over-long raw body", () => {
   assert.ok(raw?.truncated);
 });
 
+test("keeps streamed tool calls separate from assistant text", () => {
+  const log = new LiveOutputLog();
+  const handle = log.start({
+    api: "chat",
+    model: "p/model",
+    provider: "p",
+    caller: "tester",
+    requested: "auto",
+    stream: true,
+  });
+  handle.push(
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"shell","arguments":"{\\"command\\":"}}]}}]}\n\n',
+  );
+  handle.push(
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"ls\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n',
+  );
+  handle.finish({ finishReason: "tool_calls" });
+
+  const session = log.recent()[0];
+  assert.equal(session?.text, "");
+  assert.deepEqual(session?.toolCalls, [{ name: "shell", arguments: '{"command":"ls"}' }]);
+});
+
+test("caps stored tool call arguments", () => {
+  const log = new LiveOutputLog();
+  const handle = log.start({
+    api: "chat",
+    model: "p/model",
+    provider: "p",
+    caller: "tester",
+    requested: "auto",
+    stream: false,
+  });
+  handle.finish({ toolCalls: [{ name: "write", arguments: "x".repeat(5000) }] });
+
+  const call = log.recent()[0]?.toolCalls[0];
+  assert.equal(call?.name, "write");
+  assert.equal(call?.arguments.length, 4001);
+  assert.match(call?.arguments ?? "", /…$/);
+});
+
 test("raw returns null for unknown session", () => {
   const log = new LiveOutputLog();
   assert.equal(log.raw(999), null);

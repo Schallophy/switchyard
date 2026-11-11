@@ -710,6 +710,120 @@
   animation: live-blink 1s steps(2, start) infinite;
 }
 
+.live-calls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 12px;
+}
+
+.live-text + .live-calls {
+  border-top: 1px solid var(--rule-soft);
+}
+
+.live-call {
+  overflow: hidden;
+  border: 1px solid var(--rule-soft);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.live-call-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--rule-soft);
+  background: var(--surface-sunken);
+}
+
+.live-call-name {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.live-call-kind {
+  color: var(--ink-faint);
+  font-size: 11px;
+}
+
+.live-call-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+}
+
+.live-call-line {
+  display: block;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.live-call-command {
+  color: var(--ink);
+}
+
+.live-call-prompt {
+  color: var(--go);
+  user-select: none;
+}
+
+.live-call-path {
+  color: var(--ink-soft);
+}
+
+.live-call-note {
+  margin: 0;
+  color: var(--ink-faint);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.live-call-diff {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--surface-sunken);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.live-call-del,
+.live-call-add {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.live-call-del {
+  color: var(--stop);
+}
+
+.live-call-add {
+  color: var(--go);
+}
+
+.live-call-args {
+  max-height: 220px;
+  margin: 0;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .live-raw {
   margin: 8px 12px 12px;
   padding-top: 8px;

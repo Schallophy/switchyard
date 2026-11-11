@@ -415,7 +415,7 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 | `GET` | `/api/overview` | 看板所需的完整快照（含调用方统计） |
 | `GET` | `/api/capability` | 目录模型的能力排行：匹配 Artificial Analysis Intelligence Index，`?refresh=1` 跳过 10 分钟内存缓存；不落盘 |
 | `GET` | `/api/events` | 事件列表，支持 `?limit=` |
-| `GET` | `/api/live` | 实时输出 SSE：先发 `snapshot`，随后推送 `start` / `delta` / `done` / `clear`；只保留最近的会话，单条输出会截断 |
+| `GET` | `/api/live` | 实时输出 SSE：先发 `snapshot`，随后推送 `start` / `delta` / `done` / `clear`；会话里带结构化的 `toolCalls`，只保留最近的记录，单条输出会截断 |
 | `GET` | `/api/live/:id/raw` | 单条会话的原始响应体（JSON 或 SSE 原文，最多保留 128K 字符），用于排查无可见文本的回复 |
 | `DELETE` | `/api/live` | 清空内存里的实时输出 |
 | `GET` | `/api/config` | 读取配置：`text`（脱敏 JSON 文本）、`config`（结构化对象，`apiKey` 置空）、`apiKeySet`、Key 状态与路径 |

@@ -18,6 +18,17 @@ const API_TITLES = {
 
 const MAX_LOCAL = 80;
 
+const FINISH_LABELS = {
+  stop: "正常结束",
+  length: "达到长度上限",
+  tool_calls: "工具调用",
+  content_filter: "内容过滤",
+  completed: "完成",
+  done: "完成",
+  failed: "失败",
+  incomplete: "未完成",
+};
+
 const local = {
   sessions: new Map(),
   rawCache: new Map(),
@@ -181,7 +192,7 @@ function paint() {
     <div class="page-head">
       <div>
         <h1 class="page-title">实时输出</h1>
-        <p class="page-sub">查看最近经过网关的模型输出，每条都标出实际承接的模型和协议；工具调用会以 [tool_call] 标出，没有可见文本时可直接展开原始响应排查。内容只保存在内存里，刷新页面或重启进程后清空。</p>
+        <p class="page-sub">查看最近经过网关的模型输出，每条都标出实际承接的模型和协议；工具调用会单独列出，没有可见文本时可直接展开原始响应排查。内容只保存在内存里，刷新页面或重启进程后清空。</p>
       </div>
       <div class="page-tools">
         <span class="live-state">
@@ -252,19 +263,182 @@ function filteredSessions() {
     if (local.api !== "all" && session.api !== local.api) return false;
     if (local.onlyErrors && session.status !== "error") return false;
     if (query) {
+      const tools = Array.isArray(session.toolCalls)
+        ? session.toolCalls.map((call) => call.name || "").join(" ")
+        : "";
       const haystack = `${session.model || ""} ${session.provider || ""} ${session.caller || ""} ${
         session.requested || ""
-      }`.toLowerCase();
+      } ${tools}`.toLowerCase();
       if (!haystack.includes(query)) return false;
     }
     return true;
   });
 }
 
+const TOOL_LABELS = {
+  shell: "命令",
+  bash: "命令",
+  write: "写入",
+  edit: "编辑",
+  read: "读取",
+  grep: "搜索",
+  glob: "匹配",
+  webfetch: "抓取",
+  task: "子任务",
+  list: "目录",
+};
+
+function parseToolArgs(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function clipText(value, max = 500) {
+  const text = String(value ?? "");
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+function firstLine(value) {
+  const text = String(value ?? "").trim();
+  return clipText(text.split(/\r?\n/, 1)[0] ?? "", 220);
+}
+
+function countLines(value) {
+  const text = String(value ?? "");
+  return text ? text.split(/\r?\n/).length : 0;
+}
+
+function prettyArgs(args) {
+  const parsed = parseToolArgs(args);
+  if (!parsed) return args;
+  try {
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return args;
+  }
+}
+
+/** 把工具调用渲染成人能直接读的摘要，完整 JSON 仍可在原始响应里查。 */
+function toolCallHtml(call) {
+  const name = typeof call?.name === "string" && call.name ? call.name : "tool";
+  const args = typeof call?.arguments === "string" ? call.arguments : "";
+  const parsed = parseToolArgs(args);
+  const parts = [];
+
+  const line = (value, className = "") => {
+    if (value === undefined || value === null || value === "") return;
+    parts.push(`<code class="live-call-line ${className}">${esc(clipText(value, 600))}</code>`);
+  };
+  const note = (value) => {
+    if (!value) return;
+    parts.push(`<p class="live-call-note">${esc(value)}</p>`);
+  };
+
+  if (parsed) {
+    switch (name) {
+      case "shell":
+      case "bash": {
+        const command = parsed.command ?? parsed.cmd ?? "";
+        if (command) {
+          parts.push(
+            `<code class="live-call-line live-call-command"><span class="live-call-prompt">$</span> ${esc(
+              clipText(command, 600),
+            )}</code>`,
+          );
+        }
+        const extras = [];
+        if (parsed.workdir) extras.push(`目录 ${clipText(parsed.workdir, 180)}`);
+        if (parsed.timeout) extras.push(`超时 ${clipText(parsed.timeout, 20)} ms`);
+        if (parsed.description) extras.push(clipText(parsed.description, 180));
+        note(extras.join(" · "));
+        break;
+      }
+      case "edit": {
+        line(parsed.path ?? parsed.filePath ?? parsed.file_path, "live-call-path");
+        const oldText = parsed.oldString ?? parsed.old_string ?? parsed.oldText ?? "";
+        const newText = parsed.newString ?? parsed.new_string ?? parsed.newText ?? "";
+        if (oldText || newText) {
+          const diff = [];
+          if (oldText) diff.push(`<span class="live-call-del">− ${esc(firstLine(oldText))}</span>`);
+          if (newText) diff.push(`<span class="live-call-add">+ ${esc(firstLine(newText))}</span>`);
+          parts.push(`<div class="live-call-diff">${diff.join("")}</div>`);
+          note(`旧 ${fmtInt(countLines(oldText))} 行 → 新 ${fmtInt(countLines(newText))} 行`);
+        }
+        break;
+      }
+      case "write": {
+        line(parsed.path ?? parsed.filePath ?? parsed.file_path, "live-call-path");
+        if (typeof parsed.content === "string") {
+          note(`写入 ${fmtInt(countLines(parsed.content))} 行 · ${fmtInt(parsed.content.length)} 字符`);
+        }
+        break;
+      }
+      case "read": {
+        line(parsed.path ?? parsed.filePath ?? parsed.file_path, "live-call-path");
+        const extras = [];
+        if (parsed.offset !== undefined) extras.push(`从第 ${fmtInt(parsed.offset)} 行`);
+        if (parsed.limit !== undefined) extras.push(`读 ${fmtInt(parsed.limit)} 行`);
+        note(extras.join(" · "));
+        break;
+      }
+      case "grep": {
+        line(parsed.pattern, "live-call-pattern");
+        const extras = [];
+        if (parsed.path) extras.push(clipText(parsed.path, 180));
+        if (parsed.include) extras.push(`匹配 ${clipText(parsed.include, 80)}`);
+        if (parsed.glob) extras.push(`glob ${clipText(parsed.glob, 80)}`);
+        note(extras.join(" · "));
+        break;
+      }
+      case "glob": {
+        line(parsed.pattern, "live-call-pattern");
+        if (parsed.path) note(clipText(parsed.path, 200));
+        break;
+      }
+      case "webfetch": {
+        line(parsed.url);
+        if (parsed.format) note(`格式 ${clipText(parsed.format, 40)}`);
+        break;
+      }
+      case "task": {
+        line(parsed.description);
+        if (parsed.prompt) note(clipText(firstLine(parsed.prompt), 200));
+        break;
+      }
+      case "list": {
+        line(parsed.path ?? ".", "live-call-path");
+        break;
+      }
+    }
+  }
+
+  if (parts.length === 0) {
+    const raw = args ? prettyArgs(args) : "（无参数）";
+    parts.push(`<pre class="live-call-args">${esc(clipText(raw, 800))}</pre>`);
+  }
+
+  const label = TOOL_LABELS[name];
+  return `<div class="live-call" data-tool="${esc(name)}">
+    <div class="live-call-head">
+      <span class="live-call-name">${esc(name)}</span>
+      ${label ? `<span class="live-call-kind">${esc(label)}</span>` : ""}
+    </div>
+    <div class="live-call-body">${parts.join("")}</div>
+  </div>`;
+}
+
 function cardHtml(session) {
   const status = session.status;
   const statusLabel = status === "streaming" ? "流式中" : status === "error" ? "失败" : "完成";
-  const text = session.text || (status === "streaming" ? "" : "（无文本输出）");
+  const toolCalls = Array.isArray(session.toolCalls) ? session.toolCalls : [];
+  const hasToolCalls = toolCalls.length > 0;
+  const text = session.text || (status === "streaming" || hasToolCalls ? "" : "（无文本输出）");
+  const rawOpen = !session.text && !hasToolCalls && !session.error;
   const usage = session.usage;
   const meta = [
     session.stream ? "流式" : "非流式",
@@ -273,7 +447,7 @@ function cardHtml(session) {
     usage ? `输入 ${fmtTokens(Math.max(0, usage.promptTokens - usage.cachedPromptTokens))} · 输出 ${fmtTokens(usage.completionTokens)}` : null,
     session.bytes > 0 ? fmtBytes(session.bytes) : null,
     session.truncated ? "已截断" : null,
-    session.finishReason ? `完成：${esc(session.finishReason)}` : null,
+    session.finishReason ? `结束：${FINISH_LABELS[session.finishReason] ?? session.finishReason}` : null,
   ]
     .filter(Boolean)
     .map((item) => `<span>${esc(item)}</span>`)
@@ -300,10 +474,11 @@ function cardHtml(session) {
         <span class="live-meta">${meta}</span>
       </header>
       ${session.error ? `<div class="live-error">${esc(session.error)}</div>` : ""}
-      <pre class="live-text" data-role="text">${esc(text)}</pre>
+      ${text || status === "streaming" ? `<pre class="live-text" data-role="text">${esc(text)}</pre>` : ""}
+      ${hasToolCalls ? `<div class="live-calls">${toolCalls.map(toolCallHtml).join("")}</div>` : ""}
       ${session.rawLength > 0 && status !== "streaming"
-        ? `<details class="live-raw"${!session.text && !session.error ? " open" : ""} data-live-raw="${session.id}">
-          <summary>${!session.text ? "原始响应（无可见文本）" : "原始响应"}</summary>
+        ? `<details class="live-raw"${rawOpen ? " open" : ""} data-live-raw="${session.id}">
+          <summary>${rawOpen ? "原始响应（无可见文本）" : "原始响应"}</summary>
           <pre class="live-raw-text" data-role="raw">加载中…</pre>
         </details>`
         : ""

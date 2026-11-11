@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { SseOutputExtractor, extractOutputText } from "../src/core/output-text.ts";
+import { SseOutputExtractor, extractOutputText, extractToolCalls } from "../src/core/output-text.ts";
 
 test("extracts chat completions text, including content parts", () => {
   assert.equal(
@@ -24,34 +24,35 @@ test("extracts chat completions text, including content parts", () => {
   );
 });
 
-test("extracts legacy completions and tool calls", () => {
+test("extracts chat text and tool calls into separate fields", () => {
   assert.equal(extractOutputText("completions", { choices: [{ text: "plain" }] }), "plain");
-  assert.equal(
-    extractOutputText("chat", {
-      choices: [
-        {
-          message: {
-            content: null,
-            tool_calls: [{ function: { name: "lookup", arguments: '{"q":"x"}' } }],
-          },
+
+  const chat = {
+    choices: [
+      {
+        message: {
+          content: null,
+          tool_calls: [{ function: { name: "lookup", arguments: '{"q":"x"}' } }],
         },
-      ],
-    }),
-    '[tool_call] lookup({"q":"x"})',
-  );
+      },
+    ],
+  };
+  assert.equal(extractOutputText("chat", chat), null);
+  assert.deepEqual(extractToolCalls("chat", chat), [{ name: "lookup", arguments: '{"q":"x"}' }]);
 });
 
 test("extracts responses output from both text and structured items", () => {
   assert.equal(extractOutputText("responses", { output_text: "final" }), "final");
-  assert.equal(
-    extractOutputText("responses", {
-      output: [
-        { type: "message", content: [{ type: "output_text", text: "part one" }] },
-        { type: "function_call", name: "search", arguments: "{}" },
-      ],
-    }),
-    'part one\n[tool_call] search({})',
-  );
+
+  const responses = {
+    output: [
+      { type: "message", content: [{ type: "output_text", text: "part one" }] },
+      { type: "function_call", name: "search", arguments: "{}" },
+    ],
+  };
+  assert.equal(extractOutputText("responses", responses), "part one");
+  assert.deepEqual(extractToolCalls("responses", responses), [{ name: "search", arguments: "{}" }]);
+  assert.deepEqual(extractToolCalls("chat", { choices: [] }), []);
 });
 
 test("summarizes embedding results instead of showing raw vectors", () => {
@@ -129,8 +130,8 @@ test("assembles chat tool calls streamed across deltas", () => {
     'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"x\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n',
   );
   assert.equal(extractor.push("data: [DONE]\n\n"), "");
-  assert.equal(extractor.flush(), '[tool_call] lookup({"q":"x"})');
   assert.equal(extractor.flush(), "");
+  assert.deepEqual(extractor.getToolCalls(), [{ name: "lookup", arguments: '{"q":"x"}' }]);
 });
 
 test("returns null finish reason when provider did not report one", () => {

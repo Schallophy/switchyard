@@ -1,10 +1,12 @@
 import type { ApiKind } from "../config/schema.ts";
 import type { Usage } from "../types.ts";
-import { SseOutputExtractor } from "./output-text.ts";
+import { SseOutputExtractor, type OutputToolCall } from "./output-text.ts";
 
 const DEFAULT_MAX_SESSIONS = 50;
 const DEFAULT_MAX_TEXT_CHARS = 32_000;
 const DEFAULT_MAX_RAW_CHARS = 128_000;
+const MAX_TOOL_CALLS = 8;
+const MAX_TOOL_CALL_ARGS = 4_000;
 const TRUNCATED_MARKER = "\n\n…（输出过长，已截断）";
 const RAW_TRUNCATED_MARKER = "\n\n…（原始响应过长，已截断）";
 
@@ -21,6 +23,7 @@ export interface LiveOutputSession {
   stream: boolean;
   status: LiveOutputStatus;
   text: string;
+  toolCalls: OutputToolCall[];
   finishReason: string | null;
   raw: string;
   rawTruncated: boolean;
@@ -47,6 +50,7 @@ export interface LiveOutputStart {
 
 export interface LiveOutputFinish {
   text?: string | null;
+  toolCalls?: OutputToolCall[] | null;
   finishReason?: string | null;
   raw?: string | null;
   usage?: Usage | null;
@@ -100,6 +104,7 @@ export class LiveOutputLog {
       stream: input.stream,
       status: "streaming",
       text: "",
+      toolCalls: [],
       finishReason: null,
       raw: "",
       rawTruncated: false,
@@ -199,6 +204,7 @@ export class LiveOutputLog {
     }
 
     session.status = patch.error ? "error" : "ok";
+    session.toolCalls = trimToolCalls(patch.toolCalls ?? []);
     session.finishReason = patch.finishReason ?? null;
     session.usage = patch.usage ?? null;
     session.bytes = patch.bytes ?? session.bytes;
@@ -255,6 +261,11 @@ export class LiveOutputHandle {
     return this.#extractor.getFinishReason();
   }
 
+  /** 流式响应结束后收集到的工具调用。 */
+  getToolCalls(): OutputToolCall[] {
+    return this.#extractor.getToolCalls();
+  }
+
   finish(patch: LiveOutputFinish = {}): void {
     if (this.#finished) return;
     this.#finished = true;
@@ -262,6 +273,7 @@ export class LiveOutputHandle {
     if (tail) this.#log.append(this.#session, tail);
     this.#log.complete(this.#session, {
       text: patch.text,
+      toolCalls: patch.toolCalls ?? this.getToolCalls(),
       finishReason: patch.finishReason ?? this.getFinishReason(),
       raw: patch.raw,
       usage: patch.usage,
@@ -278,7 +290,19 @@ function cloneSession(session: LiveOutputSession): LiveOutputView {
   return {
     ...rest,
     rawLength: raw.length,
+    toolCalls: session.toolCalls.map((call) => ({ ...call })),
     usage: session.usage ? { ...session.usage } : null,
     finishReason: session.finishReason ?? null,
   };
+}
+
+/** 工具调用参数可能很大，快照里只保留前几个、每段截断，完整内容仍可看原始响应。 */
+function trimToolCalls(calls: OutputToolCall[]): OutputToolCall[] {
+  return calls.slice(0, MAX_TOOL_CALLS).map((call) => ({
+    name: call.name,
+    arguments:
+      call.arguments.length > MAX_TOOL_CALL_ARGS
+        ? `${call.arguments.slice(0, MAX_TOOL_CALL_ARGS)}…`
+        : call.arguments,
+  }));
 }
