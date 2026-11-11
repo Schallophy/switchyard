@@ -55,8 +55,6 @@ cp .env.example .env       # 1. 填 DASHSCOPE_API_KEY=sk-...
   gateway  http://127.0.0.1:8788/v1
   admin    http://127.0.0.1:8788
   config   /path/to/config.json
-
-就绪 · 按 Ctrl+C 停止
 ```
 
 - 每个 API 请求不再打到控制台。访问日志只写入 `switchyard.log`（JSON，含 `method` / `path` / `status` / `ms`）；想在终端看逐请求的一行日志，把 `SWITCHYARD_LOG_LEVEL=debug`（或 `log.level`）设为 `debug`。
@@ -65,6 +63,19 @@ cp .env.example .env       # 1. 填 DASHSCOPE_API_KEY=sk-...
 - `.env` 由程序自动加载（存在才读），缺少时静默跳过，语法错误仍会报错。
 - npm 自己会打印 `> switchyard@0.1.0 start` 两行；想只看应用输出可以用 `npm start --silent`，或直接 `node src/index.ts`。
 - 配置迁移等提示只在启动时输出，重复提示说明 `config.json` 还是旧格式——在看板里保存一次即可写回新格式。
+
+### 长期运行
+
+网关是常驻服务，启动信息打印完就保持安静，不提示「按 Ctrl+C 退出」。停止交给信号和服务管理器：
+
+- `SIGINT`（终端 Ctrl+C）、`SIGTERM`（systemd / docker stop）和 Windows 的 `SIGBREAK` 都会优雅关闭：停止接收新连接、落盘用量与事件、写完「已关闭」日志后以 `0` 退出。
+- 关闭最多等 5 秒，长连接拖住时会强制退出（退出码 `1`）；再按一次 Ctrl+C 也会立即强制退出。
+- 推荐托管方式：
+  - Windows：用 [NSSM](https://nssm.cc/) 注册为服务，`nssm set switchyard AppExit Default Restart`，崩溃或重启机器后自动拉起；
+  - Linux：systemd unit，设置 `Restart=always`、`Environment=SWITCHYARD_CONFIG=/etc/switchyard/config.json`；
+  - 容器：`restart: unless-stopped`，`STOPSIGNAL SIGTERM`，数据目录挂载到卷。
+- 探活：`GET /health` 返回 `{"status":"ok","uptimeSeconds":...}`，可直接给负载均衡或监控使用。
+- 日志按 JSON Lines 写入 `<数据目录>/switchyard.log`，长期运行请交给外部轮转（logrotate、NSSM 的日志轮转，或收集容器 stdout）。
 
 ### Key 从哪来
 

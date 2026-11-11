@@ -14,6 +14,8 @@ export interface Logger {
   error(message: string, fields?: LogFields): void;
   /** 访问日志：终端压成一行，文件里保留 method / path / status / ms。 */
   access(method: string, path: string, status: number, ms: number): void;
+  /** 等文件日志写完，退出前调用，避免最后几行丢失。 */
+  flush(): Promise<void>;
   child(bindings: LogFields): Logger;
 }
 
@@ -139,6 +141,9 @@ export function createLogger(options: LoggerOptions = {}): Logger {
             duration(ms),
           )}\n`,
         );
+      },
+      flush: async () => {
+        await queue;
       },
       child: (extra) => make({ ...bindings, ...extra }),
     };

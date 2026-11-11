@@ -81,6 +81,7 @@ const logger: Logger = {
   warn: () => undefined,
   error: () => undefined,
   access: () => undefined,
+  flush: async () => undefined,
   child: () => logger,
 };
 

@@ -78,22 +78,42 @@ async function main(): Promise<void> {
   server.on("error", (error) => logger.error("server error", { error: error.message }));
   banner(runtime);
   for (const warning of runtime.warnings) logger.warn(warning);
-  if (runtime.warnings.length > 0) process.stdout.write("\n");
-  process.stdout.write(`${paint(DIM, "就绪 · 按 Ctrl+C 停止")}\n\n`);
   await runtime.bootstrap();
 
   let closing = false;
   const shutdown = async (signal: string): Promise<void> => {
-    if (closing) return;
+    if (closing) {
+      logger.warn(`${signal} 重复到达，立即退出`);
+      await logger.flush();
+      process.exit(1);
+    }
     closing = true;
-    logger.info("正在关闭", { signal });
+    logger.info(`收到 ${signal}，正在关闭`);
+
+    // 长连接可能让 server.close() 一直等下去，超时后强制退出
+    const force = setTimeout(() => {
+      logger.warn("等待连接关闭超时，强制退出");
+      void logger.flush().finally(() => process.exit(1));
+    }, 5_000);
+    force.unref();
+
     server.close();
-    await runtime.shutdown();
-    process.exit(0);
+    try {
+      await runtime.shutdown();
+      logger.info("已关闭");
+    } catch (error) {
+      logger.error("关闭时出错", { error: error instanceof Error ? error.message : String(error) });
+      process.exitCode = 1;
+    } finally {
+      clearTimeout(force);
+      await logger.flush();
+    }
+    process.exit(process.exitCode ?? 0);
   };
 
-  process.on("SIGINT", () => void shutdown("SIGINT"));
-  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  for (const signal of ["SIGINT", "SIGTERM", "SIGBREAK"] as const) {
+    process.on(signal, () => void shutdown(signal));
+  }
   process.on("uncaughtException", (error) => {
     logger.error("未捕获异常", { error: error.message, stack: error.stack });
   });
