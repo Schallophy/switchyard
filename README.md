@@ -80,7 +80,7 @@ cp .env.example .env       # 1. 填 DASHSCOPE_API_KEY=sk-...
   ```json
   {"status":"ok","version":"0.1.0","uptimeSeconds":3600,"bootedAt":"...","model":"qianwenai/deepseek-v4.1-flash-1017","models":{"total":1,"alive":1,"dead":0},"providers":{"total":2,"configured":2}}
   ```
-- 日志按 JSON Lines 写入 `<数据目录>/switchyard.log`，内置轮转：默认单文件 10 MB、保留 5 份（`switchyard.log.1` … `.5`），由 `log.maxBytes` / `log.maxFiles` 调整；设 `maxBytes: 0` 关闭轮转。轮转由程序完成，不需要 logrotate。
+- 日志按 JSON Lines 写入 `<数据目录>/switchyard.log`，内置轮转：默认单文件 2 MB、保留 3 份（`switchyard.log.1` … `.3`），总共不超过 8 MB；由 `log.maxBytes` / `log.maxFiles` 调整，设 `maxBytes: 0` 关闭轮转。轮转由程序完成，不需要 logrotate。
 - 配置热加载：直接编辑 `config.json` 会自动生效（监听文件变化，250ms 防抖），日志里输出一条 `配置已重新加载（文件变更）`；POSIX 上也可以 `kill -HUP <pid>`。设置 `SWITCHYARD_CONFIG_WATCH=0` 可关闭监听。看板保存本身已经即时生效，不会触发多余的重新加载。
 - 热加载时如果新配置校验失败（JSON 写坏、端口非法等），会记录错误并继续使用旧配置，进程不会退出。
 
@@ -258,8 +258,8 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
   "log": {
     "level": "info",            // debug / info / warn / error
     "file": "",                 // 留空写入数据目录的 switchyard.log
-    "maxBytes": 10485760,       // 单文件上限，0 = 不轮转
-    "maxFiles": 5               // 保留 switchyard.log.1 … .5
+    "maxBytes": 2097152,        // 单文件上限，0 = 不轮转
+    "maxFiles": 3               // 保留 switchyard.log.1 … .3
   },
   "chain": {
     "active": "dashscope/qwen3.8-27b",       // 当前输出模型，必须在 models 里
@@ -321,8 +321,8 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 | `ui.enabled` | `false` 时不再提供看板静态资源，配置只能走 `config.json` 与 `/api/config` |
 | `log.level` | `debug` / `info` / `warn` / `error`；`SWITCHYARD_LOG_LEVEL` 优先级更高 |
 | `log.file` | 日志文件路径，留空为 `<数据目录>/switchyard.log` |
-| `log.maxBytes` | 单个日志文件上限（字节），默认 `10485760`（10 MB）；`0` 表示不轮转 |
-| `log.maxFiles` | 轮转后保留的旧文件数（`.1` … `.N`），默认 `5`；`0` 表示只保留当前文件 |
+| `log.maxBytes` | 单个日志文件上限（字节），默认 `2097152`（2 MB）；`0` 表示不轮转 |
+| `log.maxFiles` | 轮转后保留的旧文件数（`.1` … `.N`），默认 `3`；`0` 表示只保留当前文件 |
 | `chain.active` | 当前输出模型（`提供商/模型名`）；`auto` 请求从这里开始。必须在 `chain.models` 里，否则回落到第一个模型 |
 | `chain.models` | 候选模型列表，顺序即优先级；每项都绑定提供商，写成 `提供商/模型名` |
 | `chain.context.window` | 模型列表共用的上下文窗口，默认 `256000` |

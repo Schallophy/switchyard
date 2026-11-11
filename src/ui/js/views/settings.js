@@ -548,7 +548,7 @@ function logPanel() {
           <input class="input" type="number" min="0" max="10240" step="1" data-path="log.maxBytes" data-scale="1048576" value="${Math.round(
             ((config.log.maxBytes ?? 0) / 1_048_576) * 100,
           ) / 100}">
-          <span class="field-hint">0 表示不轮转；默认 10 MB。</span>
+          <span class="field-hint">0 表示不轮转；默认 2 MB。</span>
         </label>
         <label class="field">
           <span class="field-label">保留份数</span>

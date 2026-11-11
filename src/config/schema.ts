@@ -58,8 +58,8 @@ export interface LogConfig {
   maxFiles: number;
 }
 
-export const DEFAULT_LOG_MAX_BYTES = 10 * 1024 * 1024;
-export const DEFAULT_LOG_MAX_FILES = 5;
+export const DEFAULT_LOG_MAX_BYTES = 2 * 1024 * 1024;
+export const DEFAULT_LOG_MAX_FILES = 3;
 
 export const DEFAULT_MAX_BODY_BYTES = 16 * 1024 * 1024;
 
