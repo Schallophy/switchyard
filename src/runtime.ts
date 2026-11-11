@@ -135,6 +135,8 @@ export class Runtime {
     const runtime = new Runtime(options, store);
     const aliases = collectModelAliases(options.config);
     if (aliases.size > 0) store.migrateModelCodes((code) => aliases.get(code) ?? null);
+    // 模型只能由用户加入；目录里的候选模型不落盘
+    store.pruneModels(options.config.chain.models);
     return runtime;
   }
 
@@ -219,11 +221,6 @@ export class Runtime {
 
   chainCodes(): string[] {
     return [...this.config.chain.models];
-  }
-
-  allCodes(): string[] {
-    const codes = new Set<string>([...this.chainCodes(), ...this.store.catalog.models.map((item) => item.code)]);
-    return [...codes];
   }
 
   snapshotModel(code: string): RuntimeSnapshotModel {
@@ -663,7 +660,8 @@ export class Runtime {
     }
 
     this.store.setCatalog(entries);
-    this.store.ensure(this.allCodes());
+    this.store.ensure(this.chainCodes());
+    this.store.pruneModels(this.chainCodes());
     this.#catalogError = errors.length > 0 ? errors.join("；") : null;
     const summary =
       errors.length > 0
@@ -740,6 +738,7 @@ export class Runtime {
     chain.models = next;
     if (!next.includes(chain.active)) chain.active = next[0] ?? "";
     this.store.ensure(next);
+    this.store.pruneModels(next);
     await saveConfig(this.configPath, this.config);
     const message =
       added.length > 0 && removed.length === 0
@@ -807,7 +806,8 @@ export class Runtime {
     const previousHost = this.config.host;
     this.config = next;
     await saveConfig(this.configPath, next);
-    this.store.ensure(this.allCodes());
+    this.store.ensure(this.chainCodes());
+    this.store.pruneModels(this.chainCodes());
     this.events.push({ kind: "config", level: "info", message: "配置已保存" });
     const warnings: string[] = [];
     if (previousPort !== next.port) warnings.push("端口变更需要重启进程后生效");

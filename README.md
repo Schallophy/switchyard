@@ -197,6 +197,7 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 - `gatewayToken` 为空时会接受任意 Bearer 值，这正是区分多个客户端的前提；设置后只有该令牌会被接受，所有流量会归到同一个调用方。
 - Token 统计依赖提供商返回 `usage`；流式请求默认注入 `stream_options.include_usage`，提供商不返回 usage 时只计请求数。缓存明细支持 `prompt_tokens_details.cached_tokens`、`input_tokens_details.cached_tokens` 与 `prompt_cache_hit_tokens`；未上报缓存明细的历史请求无法回算，缓存命中率会显示为「—」。
 - 用量按协议分开累计：`chat`（`/v1/chat/completions`）、`completions`（`/v1/completions`）、`responses`（`/v1/responses`）、`embeddings`（`/v1/embeddings`）。看板右上角实时显示最近一次请求走的协议，「用量」页显示各协议的请求数，调用方表格里的「协议」列是它最近一次请求的协议。
+- **只有用户加入模型列表的模型才会写进 `state.json`**：目录里拉到的候选模型、以及列表外透传请求用到的模型，都不会生成模型记录（不占 `models`、不保存健康状态与校准样本）。透传请求的 Token 仍然计入全局统计与调用方统计。模型从列表移除时，它的记录与校准样本一并删除。
 - 「设置 → 数据」可重置用量统计：清空请求、失败、切换与 Token 累计（含缓存命中数、协议计数）并删除调用方记录，模型健康状态、目录、事件和配置都会保留。重置后新请求按真实新增输入重新累计。
 
 ## 配置
@@ -441,4 +442,4 @@ src/
 test/                   单元测试与模拟提供商
 ```
 
-数据目录默认包含 `state.json`（模型状态与统计）、`events.jsonl`（事件流）、`switchyard.log`（运行日志）。
+数据目录默认包含 `state.json`（已加入模型的状态与统计）、`events.jsonl`（事件流）、`switchyard.log`（运行日志）。

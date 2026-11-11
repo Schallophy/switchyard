@@ -282,7 +282,7 @@ test("legacy bare model records merge into provider-bound codes", async () => {
   const dir = await mkdtemp(join(tmpdir(), "switchyard-state-"));
   try {
     const file = join(dir, "state.json");
-    const seed = await StateStore.open({ file, codes: [] });
+    const seed = await StateStore.open({ file, codes: ["old-model"] });
     seed.markUsed(
       "old-model",
       { promptTokens: 10, completionTokens: 5, totalTokens: 15, cachedPromptTokens: 0, cacheReported: true },
@@ -300,6 +300,46 @@ test("legacy bare model records merge into provider-bound codes", async () => {
     assert.equal(record?.promptTokens, 10);
     assert.equal(record?.cost, 0.25);
     assert.equal(reopened.calibrationRatio("qianwenai/old-model", false), 1.2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("only user-added models get persisted records", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "switchyard-state-"));
+  try {
+    const file = join(dir, "state.json");
+    const usage = {
+      promptTokens: 10,
+      completionTokens: 5,
+      totalTokens: 15,
+      cachedPromptTokens: 0,
+      cacheReported: true,
+    };
+    const store = await StateStore.open({ file, codes: ["alpha/tracked"] });
+    store.markUsed("alpha/tracked", usage, 1);
+    store.markUsed("ghost/untracked", usage, 2);
+    await store.flush();
+
+    const reopened = await StateStore.open({ file, codes: ["alpha/tracked"] });
+    assert.equal(reopened.get("alpha/tracked")?.requests, 1);
+    assert.equal(reopened.get("ghost/untracked"), undefined);
+    assert.equal(reopened.stats.cost, 3);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("pruneModels drops models that are no longer in the list", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "switchyard-state-"));
+  try {
+    const file = join(dir, "state.json");
+    const store = await StateStore.open({ file, codes: ["alpha/keep", "alpha/drop"] });
+    store.setHealth("alpha/drop", "dead", { reason: "gone" });
+    store.pruneModels(["alpha/keep"]);
+
+    assert.ok(store.get("alpha/keep"));
+    assert.equal(store.get("alpha/drop"), undefined);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

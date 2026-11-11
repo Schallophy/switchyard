@@ -241,34 +241,58 @@ export class StateStore {
     if (changed) this.saveSoon();
   }
 
+  /**
+   * 只保留模型列表里的记录。模型由用户显式加入，目录里的候选模型不算「已添加」，
+   * 所以它们既不会出现在 state.json 的 models 里，也不会保留健康状态与用量。
+   */
+  pruneModels(keep: string[]): void {
+    const allowed = new Set(keep);
+    let changed = false;
+    for (const code of Object.keys(this.#data.models)) {
+      if (allowed.has(code)) continue;
+      delete this.#data.models[code];
+      changed = true;
+    }
+    for (const code of Object.keys(this.#data.calibration)) {
+      if (allowed.has(code)) continue;
+      delete this.#data.calibration[code];
+      changed = true;
+    }
+    if (changed) this.saveSoon();
+  }
+
   setHealth(code: string, health: ModelRecord["health"], patch: Partial<ModelRecord> = {}): void {
-    const record = this.#data.models[code] ?? blankRecord(code);
+    const record = this.#data.models[code];
+    if (!record) return;
     this.#data.models[code] = { ...record, ...patch, code, health };
     this.saveSoon();
   }
 
   markUsed(code: string, usage: Usage | null, cost = 0, api: ApiKind = "chat"): void {
-    const record = this.#data.models[code] ?? blankRecord(code);
+    const record = this.#data.models[code];
     const cached = usage?.cachedPromptTokens ?? 0;
     const tracked = usage?.cacheReported ? usage.promptTokens : 0;
     const now = new Date().toISOString();
-    this.#data.models[code] = {
-      ...record,
-      health: "alive",
-      reason: null,
-      lastStatusCode: null,
-      lastErrorCode: null,
-      lastErrorMessage: null,
-      checkedAt: now,
-      lastUsedAt: now,
-      requests: record.requests + 1,
-      throttledUntil: null,
-      promptTokens: record.promptTokens + (usage?.promptTokens ?? 0),
-      cachedPromptTokens: record.cachedPromptTokens + cached,
-      cacheTrackedPromptTokens: record.cacheTrackedPromptTokens + tracked,
-      completionTokens: record.completionTokens + (usage?.completionTokens ?? 0),
-      cost: record.cost + cost,
-    };
+    // 只有用户加入列表的模型才有记录；透传模型只计入全局与调用方统计
+    if (record) {
+      this.#data.models[code] = {
+        ...record,
+        health: "alive",
+        reason: null,
+        lastStatusCode: null,
+        lastErrorCode: null,
+        lastErrorMessage: null,
+        checkedAt: now,
+        lastUsedAt: now,
+        requests: record.requests + 1,
+        throttledUntil: null,
+        promptTokens: record.promptTokens + (usage?.promptTokens ?? 0),
+        cachedPromptTokens: record.cachedPromptTokens + cached,
+        cacheTrackedPromptTokens: record.cacheTrackedPromptTokens + tracked,
+        completionTokens: record.completionTokens + (usage?.completionTokens ?? 0),
+        cost: record.cost + cost,
+      };
+    }
     if (usage) {
       this.#data.stats.promptTokens += usage.promptTokens;
       this.#data.stats.cachedPromptTokens += cached;
@@ -290,24 +314,27 @@ export class StateStore {
   }
 
   markFailure(code: string): void {
-    const record = this.#data.models[code] ?? blankRecord(code);
+    const record = this.#data.models[code];
+    if (!record) return;
     this.#data.models[code] = { ...record, failures: record.failures + 1 };
     this.saveSoon();
   }
 
   addUsage(code: string, usage: Usage, cost = 0, api: ApiKind = "chat"): void {
-    const record = this.#data.models[code] ?? blankRecord(code);
+    const record = this.#data.models[code];
     const tracked = usage.cacheReported ? usage.promptTokens : 0;
     const now = new Date().toISOString();
-    this.#data.models[code] = {
-      ...record,
-      lastUsedAt: now,
-      promptTokens: record.promptTokens + usage.promptTokens,
-      cachedPromptTokens: record.cachedPromptTokens + usage.cachedPromptTokens,
-      cacheTrackedPromptTokens: record.cacheTrackedPromptTokens + tracked,
-      completionTokens: record.completionTokens + usage.completionTokens,
-      cost: record.cost + cost,
-    };
+    if (record) {
+      this.#data.models[code] = {
+        ...record,
+        lastUsedAt: now,
+        promptTokens: record.promptTokens + usage.promptTokens,
+        cachedPromptTokens: record.cachedPromptTokens + usage.cachedPromptTokens,
+        cacheTrackedPromptTokens: record.cacheTrackedPromptTokens + tracked,
+        completionTokens: record.completionTokens + usage.completionTokens,
+        cost: record.cost + cost,
+      };
+    }
     this.#data.stats.promptTokens += usage.promptTokens;
     this.#data.stats.cachedPromptTokens += usage.cachedPromptTokens;
     this.#data.stats.cacheTrackedPromptTokens += tracked;
