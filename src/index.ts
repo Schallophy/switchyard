@@ -56,7 +56,12 @@ async function main(): Promise<void> {
     dataDir,
     config: loaded.config,
     logger,
-    warnings: [...loaded.warnings, ...overrides.warnings],
+    warnings: [
+      ...loaded.warnings,
+      // 不能安全重写（有注释/尾逗号）时仍然提示；能写回的话只在下面打一条 info
+      ...(loaded.persisted ? [] : loaded.migrations),
+      ...overrides.warnings,
+    ],
   });
 
   const server = createServer(runtime, logger);
@@ -77,6 +82,7 @@ async function main(): Promise<void> {
 
   server.on("error", (error) => logger.error("server error", { error: error.message }));
   banner(runtime);
+  if (loaded.persisted) logger.info(`配置已迁移为新格式，写回 ${configPath}`);
   for (const warning of runtime.warnings) logger.warn(warning);
   await runtime.bootstrap();
 

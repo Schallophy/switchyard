@@ -16,6 +16,10 @@ export interface LoadedConfig {
   config: GatewayConfig;
   created: boolean;
   warnings: string[];
+  /** 旧格式的自动迁移记录。 */
+  migrations: string[];
+  /** 迁移结果是否已经写回配置文件（有注释或尾逗号时不写）。 */
+  persisted: boolean;
 }
 
 /**
@@ -143,7 +147,7 @@ export async function loadConfig(path: string): Promise<LoadedConfig> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       const config = normalizeConfig({}).config;
       await saveConfig(file, config);
-      return { config, created: true, warnings: [] };
+      return { config, created: true, warnings: [], migrations: [], persisted: false };
     }
     throw error;
   }
@@ -160,7 +164,27 @@ export async function loadConfig(path: string): Promise<LoadedConfig> {
   if (!result.ok) {
     throw new ConfigError("配置文件校验失败", result.errors);
   }
-  return { config: result.config, created: false, warnings: result.warnings };
+
+  // 旧格式能自动迁移；只有严格 JSON（没有注释、尾逗号）才安全地原地重写
+  const persisted = result.migrations.length > 0 && isStrictJson(raw);
+  if (persisted) await saveConfig(file, result.config);
+
+  return {
+    config: result.config,
+    created: false,
+    warnings: result.warnings,
+    migrations: result.migrations,
+    persisted,
+  };
+}
+
+function isStrictJson(raw: string): boolean {
+  try {
+    JSON.parse(raw);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function saveConfig(path: string, config: GatewayConfig): Promise<void> {

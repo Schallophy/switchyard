@@ -66,7 +66,7 @@ test("a legacy chains[] config migrates to a single model list", () => {
   assert.deepEqual(result.config.chain.models, ["dashscope/b", "dashscope/c"]);
   assert.equal(result.config.chain.active, "dashscope/b");
   assert.deepEqual(result.config.chain.context, { window: 128_000, onOverflow: "reject" });
-  assert.ok(result.warnings.some((warning) => warning.includes("合并")));
+  assert.ok(result.migrations.some((warning) => warning.includes("合并")));
 });
 
 test("context windows default to 256K and accept overrides", () => {
@@ -191,7 +191,7 @@ test("a legacy single upstream block is migrated into providers", () => {
   };
   const result = normalizeConfig(raw);
   assert.equal(result.ok, true);
-  assert.ok(result.warnings.some((warning) => warning.includes("迁移")));
+  assert.ok(result.migrations.some((warning) => warning.includes("迁移")));
   assert.equal(result.config.providers.length, 1);
   assert.equal(result.config.providers[0].id, "default");
   assert.equal(result.config.providers[0].baseUrl, "https://api.example.com/v1");
@@ -244,7 +244,7 @@ test("legacy modelProviders binds bare model codes to providers", () => {
   assert.deepEqual(result.config.chain.models, ["dashscope/qwen3.8-27b"]);
   assert.equal(result.config.chain.active, "dashscope/qwen3.8-27b");
   assert.ok(!("modelProviders" in result.config));
-  assert.ok(result.warnings.some((warning) => warning.includes("modelProviders")));
+  assert.ok(result.migrations.some((warning) => warning.includes("modelProviders")));
 
   raw.modelProviders = { "qwen3.8-27b": "nowhere" };
   const bad = normalizeConfig(raw);
@@ -258,7 +258,7 @@ test("the intermediate modelUpstreams key is migrated into model codes", () => {
   raw.modelUpstreams = { "qwen3.8-27b": "dashscope" };
   const result = normalizeConfig(raw);
   assert.equal(result.ok, true);
-  assert.ok(result.warnings.some((warning) => warning.includes("modelUpstreams")));
+  assert.ok(result.migrations.some((warning) => warning.includes("modelUpstreams")));
   assert.deepEqual(result.config.chain.models, ["dashscope/qwen3.8-27b"]);
 });
 
@@ -292,7 +292,7 @@ test("the intermediate upstreams array is migrated to providers", () => {
   raw.defaultUpstream = providers[0].id;
   const result = normalizeConfig(raw);
   assert.equal(result.ok, true);
-  assert.ok(result.warnings.some((warning) => warning.includes("upstreams")));
+  assert.ok(result.migrations.some((warning) => warning.includes("upstreams")));
   assert.deepEqual(result.config.providers.map((item) => item.id), providers.map((item: any) => item.id));
   assert.equal(result.config.defaultProvider, providers[0].id);
 });

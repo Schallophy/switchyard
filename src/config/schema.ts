@@ -134,6 +134,8 @@ export interface NormalizeResult {
   config: GatewayConfig;
   errors: string[];
   warnings: string[];
+  /** 旧格式的自动迁移记录；可以写回配置文件后消失。 */
+  migrations: string[];
 }
 
 const DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
@@ -275,13 +277,14 @@ function readProviders(
   source: Obj,
   errors: string[],
   warnings: string[],
+  migrations: string[],
 ): { providers: ProviderConfig[]; defaultProvider: string } {
   const providers: ProviderConfig[] = [];
   // 旧版字段名：upstreams（本版之前的数组）、upstream（更早的单对象）
   let raw: unknown = source.providers;
   if (raw === undefined && Array.isArray(source.upstreams)) {
     raw = source.upstreams;
-    warnings.push("已把旧字段 upstreams 迁移为 providers");
+    migrations.push("已把旧字段 upstreams 迁移为 providers");
   }
 
   if (raw !== undefined && !Array.isArray(raw)) {
@@ -311,7 +314,7 @@ function readProviders(
     }
   } else if (isObj(source.upstream)) {
     // 更早版本的单提供商写法（键名 upstream）：自动迁移，保留用户的地址与 Key 设置
-    warnings.push("已把旧版 upstream 单对象迁移为 providers[0]（id: default）");
+    migrations.push("已把旧版 upstream 单对象迁移为 providers[0]（id: default）");
     providers.push(readProviderItem(source.upstream, "default", "upstream", errors));
   } else if (Array.isArray(raw) && raw.length === 0) {
     errors.push("providers 至少需要一个提供商");
@@ -342,16 +345,16 @@ function readLegacyBindings(
   source: Obj,
   providers: ProviderConfig[],
   errors: string[],
-  warnings: string[],
+  migrations: string[],
 ): Record<string, string> {
   let raw = source.modelProviders;
   if (raw === undefined && isObj(source.modelUpstreams)) {
     raw = source.modelUpstreams;
-    warnings.push("已把旧字段 modelUpstreams 迁移为 modelProviders");
+    migrations.push("已把旧字段 modelUpstreams 迁移为 modelProviders");
   }
   if (raw === undefined) return {};
   if (!isObj(raw)) {
-    warnings.push("modelProviders 必须是对象；已忽略，改为在模型 code 中写提供商");
+    migrations.push("已忽略非对象的 modelProviders，改为在模型 code 中写提供商");
     return {};
   }
 
@@ -359,7 +362,7 @@ function readLegacyBindings(
   for (const [rawCode, rawValue] of Object.entries(raw)) {
     const code = rawCode.trim();
     if (!code || typeof rawValue !== "string" || !rawValue.trim()) {
-      warnings.push(`modelProviders.${code || "(empty)"} 必须是提供商 id，已忽略`);
+      errors.push(`modelProviders.${code || "(empty)"} 必须是提供商 id`);
       continue;
     }
     const id = rawValue.trim().toLowerCase();
@@ -370,7 +373,7 @@ function readLegacyBindings(
     map[code] = id;
   }
   if (Object.keys(map).length > 0) {
-    warnings.push("已把 modelProviders 并入模型 code（提供商/模型名），该字段不再需要");
+    migrations.push("已把 modelProviders 并入模型 code（提供商/模型名），该字段不再需要");
   }
   return map;
 }
@@ -406,6 +409,7 @@ function readChain(
   fallbackProvider: string,
   errors: string[],
   warnings: string[],
+  migrations: string[],
 ): ChainConfig {
   let raw: Obj | null = null;
 
@@ -417,7 +421,7 @@ function readChain(
     const items = source.chains.filter(isObj);
     if (items.length > 0) {
       raw = items.find((item) => item.purpose === "default") ?? items[0] ?? null;
-      warnings.push("已把多条模型链合并为单条模型列表（保留默认链的模型与上下文设置）");
+      migrations.push("已把多条模型链合并为单条模型列表（保留默认链的模型与上下文设置）");
     }
   } else if (source.chains !== undefined) {
     errors.push("chains 必须是数组");
@@ -467,7 +471,7 @@ function readChain(
   }
 
   if (migrated.size > 0) {
-    warnings.push(`已为 ${migrated.size} 个模型补全提供商标识（保存一次配置后写回新格式）`);
+    migrations.push(`已为 ${migrated.size} 个模型补全提供商标识`);
   }
 
   return {
@@ -492,7 +496,7 @@ function readModelApis(
   providers: ProviderConfig[],
   bindings: Record<string, string>,
   errors: string[],
-  warnings: string[],
+  migrations: string[],
 ): ModelApiMap {
   const map: ModelApiMap = {};
   const raw = source.modelApis;
@@ -538,7 +542,7 @@ function readModelApis(
       map[code] = API_KINDS.filter((kind) => apis.includes(kind));
     }
     if (dropped > 0) {
-      warnings.push(`modelApis 中 ${dropped} 个旧条目不指向已加入的模型，已清理`);
+      migrations.push(`modelApis 中 ${dropped} 个旧条目不指向已加入的模型，已清理`);
     }
   }
 
@@ -592,7 +596,7 @@ function readPricing(
   providers: ProviderConfig[],
   bindings: Record<string, string>,
   errors: string[],
-  warnings: string[],
+  migrations: string[],
 ): PricingConfig {
   const pricing: PricingConfig = {
     currency: DEFAULT_PRICING_CURRENCY,
@@ -675,7 +679,7 @@ function readPricing(
     pricing.models[code] = { tiers };
   }
   if (dropped > 0) {
-    warnings.push(`pricing.models 中有 ${dropped} 个条目没有对应已绑定提供商的模型，已忽略`);
+    migrations.push(`pricing.models 中 ${dropped} 个条目没有对应已绑定提供商的模型，已忽略`);
   }
 
   return pricing;
@@ -699,6 +703,7 @@ function readResponsesChaining(source: Obj, errors: string[]): ResponsesChaining
 export function normalizeConfig(input: unknown): NormalizeResult {
   const errors: string[] = [];
   const warnings: string[] = [];
+  const migrations: string[] = [];
   const defaults = defaultConfig();
   const config: GatewayConfig = clone(defaults);
   const source = isObj(input) ? input : {};
@@ -709,13 +714,13 @@ export function normalizeConfig(input: unknown): NormalizeResult {
   config.port = readNumber(source, "port", defaults.port, 1, 65_535, "port", errors);
   config.gatewayToken = readString(source, "gatewayToken", "");
 
-  const providerResult = readProviders(source, errors, warnings);
+  const providerResult = readProviders(source, errors, warnings, migrations);
   config.providers = providerResult.providers;
   config.defaultProvider = providerResult.defaultProvider;
-  const bindings = readLegacyBindings(source, config.providers, errors, warnings);
+  const bindings = readLegacyBindings(source, config.providers, errors, migrations);
 
-  config.chain = readChain(source, config.providers, bindings, config.defaultProvider, errors, warnings);
-  config.modelApis = readModelApis(source, config.chain, config.providers, bindings, errors, warnings);
+  config.chain = readChain(source, config.providers, bindings, config.defaultProvider, errors, warnings, migrations);
+  config.modelApis = readModelApis(source, config.chain, config.providers, bindings, errors, migrations);
 
   const server = isObj(source.server) ? source.server : {};
   if (source.server !== undefined && !isObj(source.server)) errors.push("server 必须是对象");
@@ -762,8 +767,14 @@ export function normalizeConfig(input: unknown): NormalizeResult {
     ),
   };
 
-  config.pricing = readPricing(source, config.providers, bindings, errors, warnings);
+  config.pricing = readPricing(source, config.providers, bindings, errors, migrations);
   config.responsesChaining = readResponsesChaining(source, errors);
 
-  return { ok: errors.length === 0, config, errors: [...new Set(errors)], warnings: [...new Set(warnings)] };
+  return {
+    ok: errors.length === 0,
+    config,
+    errors: [...new Set(errors)],
+    warnings: [...new Set(warnings)],
+    migrations: [...new Set(migrations)],
+  };
 }

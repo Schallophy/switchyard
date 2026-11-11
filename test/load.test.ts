@@ -254,3 +254,46 @@ test("context updates validate the window and persist", async () => {
   await assert.rejects(() => runtime.updateChainContext({ window: 999 }), /context\.window/);
   await runtime.shutdown();
 });
+
+test("a strict-json legacy config is migrated and written back on load", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "switchyard-config-"));
+  const file = join(dir, "config.json");
+  const { writeFile } = await import("node:fs/promises");
+  const raw = JSON.parse(JSON.stringify(defaultConfig())) as Record<string, any>;
+  raw.chain = { active: "qwen3.8-27b", models: ["qwen3.8-27b"] };
+  raw.modelProviders = { "qwen3.8-27b": "dashscope" };
+  await writeFile(file, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+
+  const loaded = await loadConfig(file);
+  assert.equal(loaded.persisted, true);
+  assert.deepEqual(loaded.config.chain.models, ["dashscope/qwen3.8-27b"]);
+
+  const saved = JSON.parse(await readFile(file, "utf8")) as Record<string, any>;
+  assert.deepEqual(saved.chain.models, ["dashscope/qwen3.8-27b"]);
+  assert.ok(!("modelProviders" in saved));
+
+  // 第二次启动不应再产生迁移提示
+  const again = await loadConfig(file);
+  assert.equal(again.persisted, false);
+  assert.deepEqual(again.migrations, []);
+});
+
+test("a commented config is not rewritten, only reported", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "switchyard-config-"));
+  const file = join(dir, "config.json");
+  const { writeFile } = await import("node:fs/promises");
+  const text = `{
+  // 手写注释不能丢
+  "providers": [{ "id": "dashscope", "baseUrl": "https://example.com/v1" }],
+  "chain": { "models": ["qwen3.8-27b"] },
+  "modelProviders": { "qwen3.8-27b": "dashscope" },
+}
+`;
+  await writeFile(file, text, "utf8");
+
+  const loaded = await loadConfig(file);
+  assert.equal(loaded.persisted, false);
+  assert.ok(loaded.migrations.length > 0);
+  assert.deepEqual(loaded.config.chain.models, ["dashscope/qwen3.8-27b"]);
+  assert.equal(await readFile(file, "utf8"), text);
+});
