@@ -787,6 +787,13 @@
   overflow-wrap: anywhere;
 }
 
+.live-call-stat {
+  display: inline-flex;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
 .live-call-diff {
   display: flex;
   flex-direction: column;

@@ -367,7 +367,11 @@ function toolCallHtml(call) {
           if (oldText) diff.push(`<span class="live-call-del">− ${esc(firstLine(oldText))}</span>`);
           if (newText) diff.push(`<span class="live-call-add">+ ${esc(firstLine(newText))}</span>`);
           parts.push(`<div class="live-call-diff">${diff.join("")}</div>`);
-          note(`旧 ${fmtInt(countLines(oldText))} 行 → 新 ${fmtInt(countLines(newText))} 行`);
+          parts.push(
+            `<p class="live-call-note live-call-stat"><span class="live-call-add">+${fmtInt(
+              countLines(newText),
+            )}</span><span class="live-call-del">-${fmtInt(countLines(oldText))}</span></p>`,
+          );
         }
         break;
       }
