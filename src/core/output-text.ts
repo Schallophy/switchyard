@@ -33,6 +33,9 @@ export class SseOutputExtractor {
   #buffer = "";
   #hasText = false;
   #finishReason: string | null = null;
+  /** 流式工具调用是按 index 分片下发的，这里先把名字和参数拼回来。 */
+  #toolCalls = new Map<number, { name: string; args: string }>();
+  #toolCallsEmitted = false;
 
   constructor(api: ApiKind) {
     this.#api = api;
@@ -61,8 +64,10 @@ export class SseOutputExtractor {
   flush(): string {
     const block = this.#buffer;
     this.#buffer = "";
-    if (!block.trim()) return "";
-    const text = this.#block(block);
+    let text = "";
+    if (block.trim()) text = this.#block(block);
+    const toolCalls = this.#takeToolCalls();
+    if (toolCalls) text = text ? `${text}\n${toolCalls}` : toolCalls;
     if (text) this.#hasText = true;
     return text;
   }
@@ -70,6 +75,33 @@ export class SseOutputExtractor {
   /** 流式响应结束后的完成原因，如 "stop" / "length" / "tool_calls" / "completed"；未报告则为 null。 */
   getFinishReason(): string | null {
     return this.#finishReason;
+  }
+
+  /** 工具调用的名字和参数可能拆在多个 delta 里，按 index 累加后再在流结束时输出。 */
+  #collectToolCalls(value: unknown): void {
+    if (!Array.isArray(value)) return;
+    for (const call of value) {
+      if (!call || typeof call !== "object") continue;
+      const recordCall = call as Record<string, unknown>;
+      const index = typeof recordCall.index === "number" ? recordCall.index : 0;
+      const acc = this.#toolCalls.get(index) ?? { name: "", args: "" };
+      const fn = recordCall.function;
+      if (fn && typeof fn === "object") {
+        const fnRecord = fn as Record<string, unknown>;
+        if (typeof fnRecord.name === "string") acc.name += fnRecord.name;
+        if (typeof fnRecord.arguments === "string") acc.args += fnRecord.arguments;
+      }
+      this.#toolCalls.set(index, acc);
+    }
+  }
+
+  #takeToolCalls(): string | null {
+    if (this.#toolCallsEmitted || this.#toolCalls.size === 0) return null;
+    this.#toolCallsEmitted = true;
+    const lines = [...this.#toolCalls]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, call]) => `[tool_call] ${call.name}(${call.args})`);
+    return lines.join("\n");
   }
 
   #block(block: string): string {
@@ -99,7 +131,9 @@ export class SseOutputExtractor {
         if (!choice || typeof choice !== "object") continue;
         const delta = (choice as Record<string, unknown>).delta;
         if (!delta || typeof delta !== "object") continue;
-        out += textFromContent((delta as Record<string, unknown>).content);
+        const deltaRecord = delta as Record<string, unknown>;
+        out += textFromContent(deltaRecord.content);
+        this.#collectToolCalls(deltaRecord.tool_calls);
         const fr = (choice as Record<string, unknown>).finish_reason;
         if (typeof fr === "string" && fr) this.#finishReason = fr;
       }

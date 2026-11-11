@@ -181,7 +181,7 @@ function paint() {
     <div class="page-head">
       <div>
         <h1 class="page-title">实时输出</h1>
-        <p class="page-sub">查看最近经过网关的模型输出，每条都标出实际承接的模型和协议；没有可见文本时可直接展开原始响应排查。内容只保存在内存里，刷新页面或重启进程后清空。</p>
+        <p class="page-sub">查看最近经过网关的模型输出，每条都标出实际承接的模型和协议；工具调用会以 [tool_call] 标出，没有可见文本时可直接展开原始响应排查。内容只保存在内存里，刷新页面或重启进程后清空。</p>
       </div>
       <div class="page-tools">
         <span class="live-state">

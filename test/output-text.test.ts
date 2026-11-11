@@ -117,6 +117,22 @@ test("reports responses completion status", () => {
   assert.equal(extractor.getFinishReason(), "completed");
 });
 
+test("assembles chat tool calls streamed across deltas", () => {
+  const extractor = new SseOutputExtractor("chat");
+  extractor.push(
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"lookup","arguments":""}}]}}]}\n\n',
+  );
+  extractor.push(
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"q\\":"}}]}}]}\n\n',
+  );
+  extractor.push(
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"x\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n',
+  );
+  assert.equal(extractor.push("data: [DONE]\n\n"), "");
+  assert.equal(extractor.flush(), '[tool_call] lookup({"q":"x"})');
+  assert.equal(extractor.flush(), "");
+});
+
 test("returns null finish reason when provider did not report one", () => {
   const extractor = new SseOutputExtractor("chat");
   extractor.push('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n');
