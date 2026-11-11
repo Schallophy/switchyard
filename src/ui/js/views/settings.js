@@ -1,5 +1,5 @@
 import { api } from "../api.js";
-import { esc, fmtBytes } from "../format.js";
+import { esc, fmtBytes, fmtInt, fmtWindow } from "../format.js";
 import { setConfig, store } from "../store.js";
 import { confirmDialog, toast } from "../ui.js";
 
@@ -16,6 +16,34 @@ const SECTIONS = [
 
 const SECTION_NAMES = new Set(SECTIONS.map(([key]) => key));
 
+const WINDOW_MIN = 1_000;
+const WINDOW_MAX = 10_000_000;
+const WINDOW_PRESETS = [32_768, 131_072, 262_144, 524_288, 1_000_000];
+
+/** 接受 `262144`、`256K`、`1M` 这类写法；K 按 1024，M 按 1,000,000。 */
+function parseWindowTokens(text) {
+  const normalized = String(text ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[,_\s]/g, "");
+  const match = /^(\d+(?:\.\d+)?)([km]?)$/.exec(normalized);
+  if (!match) {
+    return { error: "无法识别，请填数字或 256K / 1M 这样的简写。" };
+  }
+
+  const unit = match[2];
+  const scale = unit === "k" ? 1024 : unit === "m" ? 1_000_000 : 1;
+  const value = Math.round(Number(match[1]) * scale);
+  if (!Number.isFinite(value) || value < WINDOW_MIN || value > WINDOW_MAX) {
+    return { error: `需在 ${fmtInt(WINDOW_MIN)} 到 ${fmtInt(WINDOW_MAX)} 之间。` };
+  }
+  return { value };
+}
+
+function windowHint(value) {
+  return `= ${fmtInt(value)} tokens（${fmtWindow(value)}）；也可填 256K / 1M，1K = 1024。`;
+}
+
 let rootEl = null;
 let viewCtx = null;
 let abort = null;
@@ -31,6 +59,7 @@ const local = {
   rawDirty: false,
   saving: false,
   errors: [],
+  windowError: null,
 };
 
 export function mount(root, ctx) {
@@ -42,6 +71,7 @@ export function mount(root, ctx) {
   local.saving = false;
   local.dirty = false;
   local.rawDirty = false;
+  local.windowError = null;
 
   if (store.config) seed(store.config);
 
@@ -112,6 +142,7 @@ function seed(meta) {
   local.rawText = meta.text || "";
   local.dirty = false;
   local.rawDirty = false;
+  local.windowError = null;
 }
 
 async function load() {
@@ -209,6 +240,7 @@ function paintSubnav() {
 }
 
 function paintPanel() {
+  local.windowError = null;
   const panel = rootEl?.querySelector("#settings-panel");
   if (panel) panel.innerHTML = panelHtml();
 }
@@ -241,19 +273,22 @@ function refreshSavebar() {
   if (!text || !reset || !submit) return;
 
   const dirty = isDirty();
-  text.classList.toggle("is-dirty", dirty);
+  const invalid = Boolean(local.windowError);
+  text.classList.toggle("is-dirty", dirty || invalid);
   text.textContent = local.saving
     ? "保存中…"
-    : local.errors.length
-      ? "保存失败，请修正后重试"
-      : dirty
-        ? local.rawDirty
-          ? "原始 JSON 有未保存修改"
-          : "有未保存修改"
-        : "已保存";
+    : invalid
+      ? "上下文窗口格式不正确"
+      : local.errors.length
+        ? "保存失败，请修正后重试"
+        : dirty
+          ? local.rawDirty
+            ? "原始 JSON 有未保存修改"
+            : "有未保存修改"
+          : "已保存";
 
-  reset.disabled = !dirty || local.saving;
-  submit.disabled = !dirty || local.saving;
+  reset.disabled = (!dirty && !invalid) || local.saving;
+  submit.disabled = !dirty || local.saving || invalid;
 }
 
 /* ---------- panels ---------- */
@@ -582,13 +617,21 @@ function failoverPanel() {
         <p>auto 从 active 开始按列表顺序回退。失效的模型经过重试时间后会重新参与选路；无效模型不会自动恢复。</p>
       </div>
       <div class="fields">
-        <label class="field">
-          <span class="field-label">上下文窗口（tokens）</span>
-          <input class="input" type="number" min="1000" max="10000000" step="1000" data-path="chain.context.window" value="${
+        <div class="field">
+          <label class="field-label" for="context-window">上下文窗口</label>
+          <input class="input mono" id="context-window" type="text" autocomplete="off" spellcheck="false" data-path="chain.context.window" value="${
             chain.context.window
           }">
-          <span class="field-hint">1000 到 10,000,000。超出时按下面的策略处理。</span>
-        </label>
+          <span class="chips window-presets" role="group" aria-label="常用上下文窗口">
+            ${WINDOW_PRESETS.map(
+              (value) =>
+                `<button class="chip" type="button" data-window-preset="${value}" aria-pressed="${
+                  chain.context.window === value
+                }">${fmtWindow(value)}</button>`,
+            ).join("")}
+          </span>
+          <span class="field-hint" data-window-hint>${windowHint(chain.context.window)}</span>
+        </div>
         <label class="field">
           <span class="field-label">超出上下文</span>
           <select class="select" data-path="chain.context.onOverflow">
@@ -825,6 +868,11 @@ function onFieldEdit(event) {
   const path = element.dataset.path;
   if (!path || !local.config) return;
 
+  if (path === "chain.context.window") {
+    applyWindowInput(element);
+    return;
+  }
+
   let value = readValue(element);
   if (element.dataset.scale) value = Math.round(Number(value) * Number(element.dataset.scale));
   setPath(local.config, path, value);
@@ -839,6 +887,39 @@ function readValue(element) {
     return Number.isFinite(value) ? value : 0;
   }
   return element.value;
+}
+
+function applyWindowInput(element) {
+  const result = parseWindowTokens(element.value);
+  const hint = rootEl?.querySelector("[data-window-hint]");
+
+  if (result.error) {
+    local.windowError = result.error;
+    element.setAttribute("aria-invalid", "true");
+    if (hint) {
+      hint.textContent = result.error;
+      hint.dataset.tone = "bad";
+    }
+    refreshSavebar();
+    return;
+  }
+
+  local.windowError = null;
+  element.removeAttribute("aria-invalid");
+  setPath(local.config, "chain.context.window", result.value);
+  local.dirty = true;
+  if (hint) {
+    hint.textContent = windowHint(result.value);
+    delete hint.dataset.tone;
+  }
+  syncWindowPresets(result.value);
+  refreshSavebar();
+}
+
+function syncWindowPresets(value) {
+  for (const chip of rootEl?.querySelectorAll("[data-window-preset]") ?? []) {
+    chip.setAttribute("aria-pressed", String(Number(chip.dataset.windowPreset) === value));
+  }
 }
 
 function setPath(target, path, value) {
@@ -877,6 +958,29 @@ async function onClick(event) {
     }
 
     window.location.hash = link.getAttribute("href");
+    return;
+  }
+
+  const preset = event.target.closest("[data-window-preset]");
+  if (preset) {
+    const input = rootEl?.querySelector('[data-path="chain.context.window"]');
+    const value = Number(preset.dataset.windowPreset);
+    if (!input || !local.config || !Number.isFinite(value)) return;
+
+    input.value = String(value);
+    input.removeAttribute("aria-invalid");
+    local.windowError = null;
+    if (value !== local.config.chain?.context?.window) {
+      setPath(local.config, "chain.context.window", value);
+      local.dirty = true;
+    }
+    const hint = rootEl?.querySelector("[data-window-hint]");
+    if (hint) {
+      hint.textContent = windowHint(value);
+      delete hint.dataset.tone;
+    }
+    syncWindowPresets(value);
+    refreshSavebar();
     return;
   }
 
@@ -1038,6 +1142,7 @@ function restore(repaint = true) {
   local.dirty = false;
   local.rawDirty = false;
   local.errors = [];
+  local.windowError = null;
 
   if (repaint) {
     renderErrors();

@@ -218,7 +218,7 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 
 模型列表通过 `chain.context` 控制上下文窗口，默认 `256000`（256K）：
 
-- `window`：窗口大小，范围 1000 到 10,000,000。
+- `window`：窗口大小，范围 1000 到 10,000,000。设置页可直接点选 32K / 128K / 256K / 512K / 1M，或输入 `256K` / `1M` 简写（K = 1024，M = 1,000,000），保存时换算成精确 tokens。
 - `onOverflow`：`reject`（默认）在估算超出时直接返回 `400 switchyard.context_length_exceeded`；`passthrough` 交给提供商自行处理。
 
 估算按 OpenAI tokenizer 的预切分规则做近似：英文常用词通常 1 token（长词约 5 字符/token），数字每 1–3 位 1 token，CJK 约 1 token/字，标点、空白与 emoji 按常见合并方式计数，并保留约 3% 余量。Chat Completions 会把 `messages`（每条 3 token 开销，另计 role）、工具定义与 `max_tokens` / `max_completion_tokens` 计入；Responses 会把 `instructions`、`input`、工具定义与 `max_output_tokens` 计入。只对 `chat/completions`、`completions` 与 `responses` 生效，`embeddings` 不做限制。`/v1/models` 会为 `auto` 与列表内模型返回 `context_length`。估算用于拒绝明显超限的请求，精确计数仍以提供商为准。

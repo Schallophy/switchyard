@@ -172,6 +172,19 @@
   line-height: 1.45;
 }
 
+.field-hint[data-tone="bad"] {
+  color: var(--stop);
+}
+
+.input[aria-invalid="true"] {
+  border-color: var(--stop);
+  box-shadow: 0 0 0 2px var(--stop-soft);
+}
+
+.window-presets {
+  margin-top: 2px;
+}
+
 .input,
 .select,
 .textarea {
