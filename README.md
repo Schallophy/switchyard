@@ -295,6 +295,7 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
     "unit": 1000000,              // 单价按每百万 token
     "models": {                   // 也可以在「设置 → 定价」里编辑
       "qianwenai/deepseek-v4.1-flash-1017": {
+        "timezone": "Asia/Shanghai", // 该模型峰谷时段使用的 IANA 时区
         "tiers": [
           // 谷时 22:00–08:00，峰时 08:00–22:00；from == to 表示全天
           { "from": "22:00", "to": "08:00", "input": 1, "cachedInput": 0.1, "output": 4 },
@@ -335,7 +336,8 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 | `failover.throttleCooldownMs` | 限流冷却时长；冷却期间模型暂时退出选路，结束后自动回到候选序列 |
 | `pricing.currency` | 成本展示币种：`CNY` / `USD` / `EUR` / `GBP` / `JPY` / `KRW`，其他值按代码前缀显示 |
 | `pricing.unit` | 单价的 token 基数，默认 `1000000`（每百万 token） |
-| `pricing.models.<code>.tiers[]` | 分时段价格：`from` / `to`（本地时间 `HH:MM`，`from == to` 表示全天）、`input`、`cachedInput`、`output`。时间段必须覆盖一整天；`"*"` 可作为所有模型的兜底 |
+| `pricing.models.<code>.timezone` | 该模型峰谷时段使用的 IANA 时区，例如 `Asia/Shanghai`、`UTC`；旧配置缺少该字段时按网关进程的本地时区补写 |
+| `pricing.models.<code>.tiers[]` | 分时段价格：`from` / `to`（按该模型的 `timezone` 解释的 `HH:MM`，`from == to` 表示全天）、`input`、`cachedInput`、`output`。时间段必须覆盖一整天；`"*"` 可作为所有模型的兜底 |
 | `responsesChaining.enabled` | 开启后 `/v1/responses` 会复用提供商的会话状态，只发送新增内容；默认关闭 |
 | `responsesChaining.ttlMinutes` | response id 的保留时间（分钟），默认 `120` |
 | `responsesChaining.maxSessions` | 内存中最多保留多少个会话前缀，默认 `500` |
@@ -356,7 +358,7 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 
 ### 成本估算
 
-配好 `pricing` 后，用量页、模型页和调用方明细会按每次请求发生的**本地时间**选择价格档并累计成本：
+配好 `pricing` 后，用量页、模型页和调用方明细会按每次请求发生的时刻，在该模型自己的 `timezone` 下选择价格档并累计成本：
 
 ```
 成本 = 新增输入 × input + 缓存命中 × cachedInput + 输出 × output
@@ -364,14 +366,14 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 
 用量页会把总额拆成「输入 / 缓存输入 / 输出」三段，并单列「缓存节省」：命中的 Token 若按 input 单价计费会多出的金额。展开调用方可看到它自己的成本构成和按模型的明细。
 
-单价在看板「设置 → 定价」里填写：选好货币和计价单位后，每个模型都能加时段（峰谷、跨零点都支持），也可以直接用「峰谷两段」按键生成 `08:00–22:00` 与 `22:00–08:00` 两档再改数值。「起」「止」相同表示全天。也可以直接编辑 `config.json` 的 `pricing`。
+单价在看板「设置 → 定价」里填写：选好货币和计价单位后，每个模型都能单独设置时区并添加时段（峰谷、跨零点都支持），也可以直接用「峰谷两段」按键生成 `08:00–22:00` 与 `22:00–08:00` 两档再改数值。「起」「止」相同表示全天。也可以直接编辑 `config.json` 的 `pricing`。时区选择器使用 IANA tzdb 的代表时区，同一时区只列一次；可按城市、国家、历史别名（如 `Asia/Calcutta`）或当前 UTC 偏移搜索，选中后统一写成代表性名称。
 
 三项 token 都来自提供商的 `usage`，只有单价是本地配置。几个边界：
 
-- 时间段按网关进程的本地时区解释，必须完整覆盖 24 小时，否则保存配置时报错；
+- 时间段按每个模型自己的 `timezone`（IANA 时区）解释，夏令时由系统时区数据库处理；必须完整覆盖 24 小时，否则保存配置时报错；
 - 只统计成功请求；提供商没返回 `usage` 的请求不计成本；
 - 不包含缓存写入费、免费额度、折扣、税与汇率；高上下文分档计价也无法按请求回拆；
-- 修改单价只影响之后的累计，不会重算已经记账的历史金额。旧版本留下、没有成本拆分的数据会在启动时按 Token 与当前价格估算一次并缩放到已记录成本，明细会标注「估算」；历史调用方只有在唯一一个时才能从模型记录反推模型明细，多个调用方时归入「历史未归属」。也可以用 `POST /api/usage/backfill-cost` 指定一个 `at` 时间（ISO 格式）重算：模型与总计按各自 token 计算，调用方按模型明细或最近使用的模型计价。
+- 修改时区或单价只影响之后的累计，不会重算已经记账的历史金额。旧版本留下、没有成本拆分的数据会在启动时按 Token 与当前价格估算一次并缩放到已记录成本，明细会标注「估算」；历史调用方只有在唯一一个时才能从模型记录反推模型明细，多个调用方时归入「历史未归属」。也可以用 `POST /api/usage/backfill-cost` 指定一个 `at` 时间（ISO 格式）重算：模型与总计按各自 token 计算，调用方按模型明细或最近使用的模型计价。
 
 ### Responses 会话续接
 
@@ -461,7 +463,8 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 
 ```bash
 npm run typecheck   # tsc --noEmit
-npm test            # node --test，99 个用例
+npm test            # node --test，全部单元测试
+npm run tzdata      # 从 IANA tzdb 2026f 重新生成时区数据
 npm run mock        # 模拟提供商，端口 9911
 ```
 

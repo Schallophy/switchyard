@@ -13,6 +13,7 @@
     "mock": "node test/mock-provider.ts",
     "test": "node --test \"test/**/*.test.ts\"",
     "calibrate": "node scripts/calibrate-tokenizer.ts",
+    "tzdata": "node scripts/build-tzdata.mjs",
     "typecheck": "tsc --noEmit"
   }
 }

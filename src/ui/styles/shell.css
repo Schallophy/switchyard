@@ -38,6 +38,8 @@
   align-items: center;
   height: 100%;
   margin-bottom: -1px;
+  flex-shrink: 0;
+  white-space: nowrap;
   border-bottom: 2px solid transparent;
   color: var(--ink-soft);
   font-size: 14px;

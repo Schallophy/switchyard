@@ -9,6 +9,7 @@ const pricing: PricingConfig = {
   unit: 1_000_000,
   models: {
     model: {
+      timezone: "Asia/Shanghai",
       tiers: [
         { from: "08:00", to: "22:00", input: 2, cachedInput: 0.2, output: 8 },
         { from: "22:00", to: "08:00", input: 1, cachedInput: 0.1, output: 4 },
@@ -18,7 +19,8 @@ const pricing: PricingConfig = {
 };
 
 function at(hour: number, minute: number): Date {
-  return new Date(2026, 10, 11, hour, minute, 0);
+  // Asia/Shanghai 常年 UTC+8，这里构造对应的 UTC 时刻。
+  return new Date(Date.UTC(2026, 10, 11, hour - 8, minute));
 }
 
 test("picks the peak tier inside 08:00–22:00", () => {
@@ -33,6 +35,26 @@ test("picks the off-peak tier across midnight", () => {
   assert.equal(priceTierAt(pricing, "model", at(7, 59))?.input, 1);
 });
 
+test("price tiers follow the configured timezone", () => {
+  const instant = new Date("2026-11-11T00:30:00Z"); // 上海 08:30，UTC 00:30
+  const utc: PricingConfig = {
+    ...pricing,
+    models: { model: { ...pricing.models.model!, timezone: "UTC" } },
+  };
+  assert.equal(priceTierAt(pricing, "model", instant)?.input, 2);
+  assert.equal(priceTierAt(utc, "model", instant)?.input, 1);
+});
+
+test("price tiers follow daylight saving transitions", () => {
+  const newYork: PricingConfig = {
+    ...pricing,
+    models: { model: { ...pricing.models.model!, timezone: "America/New_York" } },
+  };
+  // 2026-03-08 07:00Z 进入夏令时：06:30Z 仍是 01:30 EST，12:30Z 已是 08:30 EDT。
+  assert.equal(priceTierAt(newYork, "model", new Date("2026-03-08T06:30:00Z"))?.input, 1);
+  assert.equal(priceTierAt(newYork, "model", new Date("2026-03-08T12:30:00Z"))?.input, 2);
+});
+
 test("an unknown model falls back to the wildcard entry", () => {
   const withWildcard: PricingConfig = {
     ...pricing,
@@ -42,11 +64,19 @@ test("an unknown model falls back to the wildcard entry", () => {
 });
 
 test("no pricing or no matching window yields null", () => {
-  assert.equal(priceTierAt({ currency: "CNY", unit: 1_000_000, models: {} }, "model", at(9, 0)), null);
+  assert.equal(
+    priceTierAt({ currency: "CNY", unit: 1_000_000, models: {} }, "model", at(9, 0)),
+    null,
+  );
   const gapped: PricingConfig = {
     currency: "CNY",
     unit: 1_000_000,
-    models: { model: { tiers: [{ from: "08:00", to: "22:00", input: 2, cachedInput: 0.2, output: 8 }] } },
+    models: {
+      model: {
+        timezone: "Asia/Shanghai",
+        tiers: [{ from: "08:00", to: "22:00", input: 2, cachedInput: 0.2, output: 8 }],
+      },
+    },
   };
   assert.equal(priceTierAt(gapped, "model", at(23, 0)), null);
 });
@@ -55,7 +85,12 @@ test("a tier with identical from/to covers the whole day", () => {
   const allDay: PricingConfig = {
     currency: "CNY",
     unit: 1_000_000,
-    models: { model: { tiers: [{ from: "00:00", to: "00:00", input: 2, cachedInput: 0.2, output: 8 }] } },
+    models: {
+      model: {
+        timezone: "Asia/Shanghai",
+        tiers: [{ from: "00:00", to: "00:00", input: 2, cachedInput: 0.2, output: 8 }],
+      },
+    },
   };
   assert.equal(priceTierAt(allDay, "model", at(3, 0))?.output, 8);
   assert.equal(priceTierAt(allDay, "model", at(15, 0))?.output, 8);

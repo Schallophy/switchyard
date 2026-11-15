@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { defaultConfig, normalizeConfig } from "../src/config/schema.ts";
+import { defaultConfig, normalizeConfig, systemTimeZone } from "../src/config/schema.ts";
 
 test("the shipped defaults validate cleanly", () => {
   const result = normalizeConfig(defaultConfig());
@@ -309,7 +309,45 @@ test("pricing defaults to empty CNY per-million", () => {
   delete raw.pricing;
   const result = normalizeConfig(raw);
   assert.equal(result.ok, true);
-  assert.deepEqual(result.config.pricing, { currency: "CNY", unit: 1_000_000, models: {} });
+  assert.deepEqual(result.config.pricing, {
+    currency: "CNY",
+    unit: 1_000_000,
+    models: {},
+  });
+});
+
+test("each pricing entry keeps its own timezone and rejects unknown zones", () => {
+  const raw = JSON.parse(JSON.stringify(defaultConfig())) as Record<string, any>;
+  raw.pricing = {
+    models: {
+      "dashscope/a": {
+        timezone: "Asia/Tokyo",
+        tiers: [{ from: "00:00", to: "00:00", input: 1, cachedInput: 0.1, output: 4 }],
+      },
+    },
+  };
+  const result = normalizeConfig(raw);
+  assert.equal(result.ok, true);
+  assert.equal(result.config.pricing.models["dashscope/a"]?.timezone, "Asia/Tokyo");
+  assert.ok(!result.migrations.some((item) => item.includes("补充时区")));
+
+  raw.pricing.models["dashscope/a"].timezone = "Mars/Olympus";
+  const failed = normalizeConfig(raw);
+  assert.equal(failed.ok, false);
+  assert.ok(failed.errors.some((error) => error.includes("timezone")));
+});
+
+test("a pricing entry without a timezone is migrated to the server zone", () => {
+  const raw = JSON.parse(JSON.stringify(defaultConfig())) as Record<string, any>;
+  raw.pricing = {
+    models: {
+      "dashscope/a": { tiers: [{ from: "00:00", to: "00:00", input: 1, cachedInput: 0.1, output: 4 }] },
+    },
+  };
+  const result = normalizeConfig(raw);
+  assert.equal(result.ok, true);
+  assert.equal(result.config.pricing.models["dashscope/a"]?.timezone, systemTimeZone());
+  assert.ok(result.migrations.some((item) => item.includes("补充时区")));
 });
 
 test("pricing tiers normalize and keep order", () => {

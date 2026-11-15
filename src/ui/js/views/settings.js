@@ -1,6 +1,7 @@
 import { api } from "../api.js";
 import { esc, fmtBytes, fmtInt, fmtWindow } from "../format.js";
 import { setConfig, store } from "../store.js";
+import { TZ_ALIASES, TZ_ZONES } from "../tzdata.js";
 import { confirmDialog, toast } from "../ui.js";
 
 const SECTIONS = [
@@ -80,6 +81,7 @@ export function mount(root, ctx) {
   root.addEventListener("click", onClick, options);
   root.addEventListener("input", onFieldEdit, options);
   root.addEventListener("change", onFieldEdit, options);
+  root.addEventListener("keydown", onTimeZoneKeyDown, options);
 
   unloadHandler = (event) => {
     if (!isDirty()) return;
@@ -122,6 +124,7 @@ export function mount(root, ctx) {
 }
 
 function destroy() {
+  closeTimeZonePicker();
   abort?.abort();
   abort = null;
   window.removeEventListener("beforeunload", unloadHandler);
@@ -143,6 +146,15 @@ function seed(meta) {
   local.dirty = false;
   local.rawDirty = false;
   local.windowError = null;
+  normalizePricingTimeZones(local.config);
+}
+
+/** 把配置里的历史别名收敛到 IANA 代表时区，保存时不再写回别名。 */
+function normalizePricingTimeZones(config) {
+  for (const entry of Object.values(config?.pricing?.models || {})) {
+    const zone = canonicalTimeZone(entry?.timezone);
+    if (zone && zone !== entry.timezone && tzZoneIsValid(zone)) entry.timezone = zone;
+  }
 }
 
 async function load() {
@@ -203,6 +215,7 @@ function paintLoading() {
 
 function paint() {
   if (!rootEl) return;
+  closeTimeZonePicker();
 
   rootEl.innerHTML = `
     <div class="settings">
@@ -240,6 +253,7 @@ function paintSubnav() {
 }
 
 function paintPanel() {
+  closeTimeZonePicker();
   local.windowError = null;
   const panel = rootEl?.querySelector("#settings-panel");
   if (panel) panel.innerHTML = panelHtml();
@@ -467,7 +481,7 @@ function pricingPanel() {
     <section class="group">
       <div class="group-head">
         <h2>定价</h2>
-        <p>按模型填写单价与峰谷时段。用量页、模型页会按这里估算成本；时段使用网关进程的本地时区，必须完整覆盖一整天。</p>
+        <p>按模型填写单价与峰谷时段。用量页、模型页会按这里估算成本；每个模型可单独设置时区，时段必须完整覆盖一整天。</p>
       </div>
       <div class="fields">
         <label class="field">
@@ -514,6 +528,9 @@ function priceModelHtml(code) {
   }
 
   const tiers = entry.tiers || [];
+  const zone = entryTimeZone(entry);
+  const zoneInfo = timeZoneInfo(zone);
+  const safe = tzSafeId(code);
 
   return `
     <div class="price-model" data-price-model="${esc(code)}">
@@ -523,6 +540,24 @@ function priceModelHtml(code) {
         <button class="btn danger sm" type="button" data-action="price-remove-model" data-code="${esc(
           code,
         )}">移除定价</button>
+      </div>
+      <div class="price-zone">
+        <div class="price-cell tz-cell">
+          <label class="field-label" for="tz-input-${safe}">时区</label>
+          <div class="tz-field${zoneInfo ? "" : " is-invalid"}" data-tz-field>
+            <input class="tz-input mono" id="tz-input-${safe}" type="text" data-price-timezone
+              role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-autocomplete="list"
+              aria-describedby="tz-hint-${safe}" ${zoneInfo ? "" : 'aria-invalid="true"'}
+              value="${esc(zone)}" autocomplete="off" autocapitalize="off" spellcheck="false">
+            <span class="tz-offset" data-tz-offset aria-hidden="true">${
+              zoneInfo ? esc(zoneInfo.offset) : "未知"
+            }</span>
+            ${TZ_CARET}
+          </div>
+        </div>
+        <span class="field-hint tz-hint" id="tz-hint-${safe}" data-tz-hint ${
+          zoneInfo ? "" : 'data-tone="bad"'
+        }>${esc(timeZoneHint(zoneInfo))}</span>
       </div>
       <div class="price-tiers">
         ${tiers.map((tier, index) => priceTierHtml(tier, index)).join("")}
@@ -573,6 +608,637 @@ function ensurePricing() {
   local.config.pricing.currency ||= "CNY";
   local.config.pricing.unit ||= 1_000_000;
   return local.config.pricing;
+}
+
+/** 新定价默认沿用已有模型的时区，没有时退回浏览器时区。 */
+function defaultPricingTimezone() {
+  for (const entry of Object.values(local.config?.pricing?.models || {})) {
+    if (entry?.timezone) return entry.timezone;
+  }
+  return browserTimeZone();
+}
+
+function entryTimeZone(entry) {
+  const zone = canonicalTimeZone(entry?.timezone);
+  return zone || browserTimeZone();
+}
+
+/* ---------- timezone picker ---------- */
+
+const TZ_CHECK = `<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6.4 4.7 9 10 3.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const TZ_CARET = `<svg class="tz-caret" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
+const TZ_COMMON = [
+  "Asia/Shanghai",
+  "Asia/Hong_Kong",
+  "Asia/Tokyo",
+  "Asia/Singapore",
+  "Asia/Seoul",
+  "Europe/London",
+  "Europe/Berlin",
+  "America/New_York",
+  "America/Chicago",
+  "America/Los_Angeles",
+  "Australia/Sydney",
+  "UTC",
+];
+
+/** 补充数据集中没有的中文城市名；别名（Calcutta、Kiev 等）由 IANA 数据自动覆盖。 */
+const TZ_HINTS = {
+  "Asia/Shanghai": "beijing peking 北京 上海 中国",
+  "Asia/Hong_Kong": "hongkong 香港",
+  "Asia/Taipei": "taipei 台北 台湾",
+  "Asia/Tokyo": "tokyo 东京 日本",
+  "Asia/Seoul": "seoul 首尔 韩国",
+  "Asia/Singapore": "singapore 新加坡",
+  "Asia/Kolkata": "mumbai delhi 加尔各答 孟买 新德里 印度",
+  "Asia/Kathmandu": "加德满都 尼泊尔",
+  "Asia/Ho_Chi_Minh": "saigon 胡志明 西贡 越南",
+  "Asia/Yangon": "rangoon 仰光 缅甸",
+  "Asia/Dubai": "迪拜 阿联酋",
+  "Europe/London": "伦敦 英国",
+  "Europe/Paris": "巴黎 法国",
+  "Europe/Berlin": "柏林 德国",
+  "Europe/Moscow": "莫斯科 俄罗斯",
+  "Europe/Kyiv": "kiev 基辅 乌克兰",
+  "Europe/Zurich": "苏黎世 瑞士",
+  "America/New_York": "纽约 美国",
+  "America/Chicago": "芝加哥",
+  "America/Denver": "丹佛",
+  "America/Los_Angeles": "洛杉矶",
+  "America/Toronto": "多伦多 加拿大",
+  "America/Vancouver": "温哥华",
+  "America/Sao_Paulo": "圣保罗 巴西",
+  "America/Nuuk": "godthab 努克 格陵兰",
+  "Australia/Sydney": "悉尼 澳大利亚",
+  "Pacific/Auckland": "奥克兰 新西兰",
+  UTC: "协调世界时",
+};
+
+const TZ_REGIONS = {
+  Africa: "非洲",
+  America: "美洲",
+  Antarctica: "南极洲",
+  Asia: "亚洲",
+  Atlantic: "大西洋",
+  Australia: "大洋洲",
+  Europe: "欧洲",
+  Indian: "印度洋",
+  Pacific: "太平洋",
+  Etc: "其他",
+  Other: "其他",
+};
+
+const TZ_REGION_ORDER = [
+  "Asia",
+  "Europe",
+  "America",
+  "Australia",
+  "Pacific",
+  "Africa",
+  "Atlantic",
+  "Indian",
+  "Antarctica",
+  "Etc",
+  "Other",
+];
+
+const tzState = {
+  input: null,
+  field: null,
+  popup: null,
+  list: null,
+  options: [],
+  active: 0,
+  outside: null,
+};
+
+const tzFormatters = new Map();
+const tzAliasMap = new Map(Object.entries(TZ_ALIASES));
+const tzZoneLookup = new Map();
+for (const [zone] of TZ_ZONES) tzZoneLookup.set(zone.toLowerCase(), zone);
+for (const [alias, canonical] of tzAliasMap) tzZoneLookup.set(alias.toLowerCase(), canonical);
+const tzAliasIndex = new Map();
+for (const [alias, canonical] of tzAliasMap) {
+  if (!tzAliasIndex.has(canonical)) tzAliasIndex.set(canonical, []);
+  tzAliasIndex.get(canonical).push(alias);
+}
+let tzCatalog = null;
+let tzCatalogMap = null;
+let tzRegionFormatters = null;
+
+function tzSafeId(code) {
+  const text = String(code || "");
+  const base = text.replace(/[^a-zA-Z0-9_-]/g, "-");
+  let hash = 0;
+  for (const char of text) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return `${base}-${hash.toString(36)}`;
+}
+
+function tzSearchText(value) {
+  return String(value)
+    .toLowerCase()
+    .replace(/[/_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function tzOffsetToken(token) {
+  const match = /^(?:utc|gmt)?([+-])(\d{1,2})(?::?(\d{2}))?$/.exec(token);
+  if (!match) return null;
+  const hours = Number(match[2]);
+  const minutes = match[3] ? Number(match[3]) : 0;
+  if (hours > 14 || minutes > 59) return null;
+  const total = hours * 60 + minutes;
+  return match[1] === "-" ? -total : total;
+}
+
+function tzOffsetLabel(minutes) {
+  const sign = minutes < 0 ? "-" : "+";
+  const abs = Math.abs(minutes);
+  const hours = String(Math.floor(abs / 60)).padStart(2, "0");
+  const rest = String(abs % 60).padStart(2, "0");
+  return `UTC${sign}${hours}:${rest}`;
+}
+
+function tzFormatter(zone) {
+  let formatter = tzFormatters.get(zone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat("en-US", { timeZone: zone, timeZoneName: "longOffset" });
+    tzFormatters.set(zone, formatter);
+  }
+  return formatter;
+}
+
+function tzOffsetMinutes(zone) {
+  const raw =
+    tzFormatter(zone)
+      .formatToParts(new Date())
+      .find((part) => part.type === "timeZoneName")?.value || "";
+  const match = /^GMT(?:([+-])(\d{2}):(\d{2}))?$/.exec(raw);
+  if (!match) throw new Error("unknown offset");
+  if (!match[1]) return 0;
+  const value = Number(match[2]) * 60 + Number(match[3]);
+  return match[1] === "-" ? -value : value;
+}
+
+function canonicalTimeZone(value) {
+  const name = String(value || "").trim();
+  if (!name) return "";
+  return tzAliasMap.get(name) || tzZoneLookup.get(name.toLowerCase()) || name;
+}
+
+function timeZoneInfo(zone) {
+  const name = canonicalTimeZone(zone);
+  if (!name) return null;
+  try {
+    const minutes = tzOffsetMinutes(name);
+    return { zone: name, minutes, offset: tzOffsetLabel(minutes) };
+  } catch {
+    return null;
+  }
+}
+
+function tzZoneIsValid(zone) {
+  try {
+    tzFormatter(String(zone || "").trim());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function browserTimeZone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
+}
+
+function tzZoneRegion(zone) {
+  return zone.includes("/") ? zone.split("/")[0] : "Other";
+}
+
+function tzCountryText(codes) {
+  if (!codes) return "";
+  if (!tzRegionFormatters) {
+    const displayNames = (locale) => {
+      try {
+        return new Intl.DisplayNames([locale], { type: "region" });
+      } catch {
+        return null;
+      }
+    };
+    tzRegionFormatters = [displayNames("zh-CN"), displayNames("en")].filter(Boolean);
+  }
+  const names = [];
+  for (const code of codes.split(" ")) {
+    if (!code) continue;
+    names.push(code.toLowerCase());
+    for (const formatter of tzRegionFormatters) {
+      try {
+        const label = formatter.of(code);
+        if (label && label !== code) names.push(label);
+      } catch {
+        // 浏览器不认识的国家代码只保留代码本身。
+      }
+    }
+  }
+  return names.join(" ");
+}
+
+function tzOffsetSearch(minutes) {
+  const sign = minutes < 0 ? "-" : "+";
+  const abs = Math.abs(minutes);
+  const hours = Math.floor(abs / 60);
+  const rest = abs % 60;
+  const compact = rest ? `${hours}:${String(rest).padStart(2, "0")}` : `${hours}`;
+  return `utc${sign}${compact} gmt${sign}${compact} ${sign}${compact}`;
+}
+
+function tzZoneItem(zone) {
+  const name = canonicalTimeZone(zone);
+  if (!name) return null;
+  if (tzCatalogMap?.has(name)) return tzCatalogMap.get(name);
+  const info = timeZoneInfo(name);
+  if (!info) return null;
+  return {
+    zone: name,
+    region: tzZoneRegion(name),
+    minutes: info.minutes,
+    offset: info.offset,
+    search: tzSearchText(`${name} ${info.offset}`),
+  };
+}
+
+function timeZoneCatalogItems() {
+  if (tzCatalog) return tzCatalog;
+
+  const items = [];
+  for (const [zone, countries, comment = ""] of TZ_ZONES) {
+    const info = timeZoneInfo(zone);
+    if (!info) continue;
+
+    const region = tzZoneRegion(zone);
+    const aliases = tzAliasIndex.get(zone) || [];
+    items.push({
+      zone,
+      region,
+      minutes: info.minutes,
+      offset: info.offset,
+      search: tzSearchText(
+        [
+          zone,
+          region,
+          TZ_REGIONS[region] || "",
+          TZ_HINTS[zone] || "",
+          comment,
+          countries,
+          tzCountryText(countries),
+          aliases.join(" "),
+          tzOffsetSearch(info.minutes),
+          info.offset,
+        ].join(" "),
+      ),
+    });
+  }
+
+  items.sort((left, right) => left.zone.localeCompare(right.zone));
+  tzCatalog = items;
+  tzCatalogMap = new Map(items.map((item) => [item.zone, item]));
+  return tzCatalog;
+}
+
+function tzRegionRank(region) {
+  const index = TZ_REGION_ORDER.indexOf(region);
+  return index === -1 ? TZ_REGION_ORDER.length : index;
+}
+
+function timeZoneHint(info) {
+  return info
+    ? "峰谷时段按该时区的本地时间解释，夏令时自动切换；修改只影响之后的计价。"
+    : "无法识别的时区，重新选择后才会生效。";
+}
+
+function openTimeZonePicker(input, { selectAll = false, query = "" } = {}) {
+  const field = input?.closest?.("[data-tz-field]");
+  const code = input?.closest?.("[data-price-model]")?.dataset.priceModel;
+  if (!field || !code) return;
+
+  if (tzState.input === input && tzState.popup) {
+    if (query !== "") renderTimeZoneList(input, query);
+    return;
+  }
+
+  closeTimeZonePicker();
+
+  const safe = tzSafeId(code);
+  const popup = document.createElement("div");
+  popup.className = "tz-pop";
+  popup.innerHTML = `
+    <div class="tz-list" role="listbox" id="tz-list-${safe}" aria-label="时区" data-tz-list></div>
+    <div class="tz-empty" data-tz-empty hidden></div>
+    <div class="tz-foot">
+      <span data-tz-count aria-live="polite"></span>
+      <span>城市、国家或 UTC+8 都能搜</span>
+    </div>`;
+  popup.addEventListener("pointerdown", (event) => {
+    if (event.target.closest("[data-tz-zone]")) event.preventDefault();
+  });
+  field.appendChild(popup);
+  field.classList.add("is-open");
+  input.setAttribute("aria-expanded", "true");
+  input.setAttribute("aria-controls", `tz-list-${safe}`);
+
+  tzState.input = input;
+  tzState.field = field;
+  tzState.popup = popup;
+  tzState.list = popup.querySelector("[data-tz-list]");
+  tzState.outside = (event) => {
+    if (!tzState.field?.contains(event.target)) closeTimeZonePicker();
+  };
+  document.addEventListener("pointerdown", tzState.outside, true);
+
+  renderTimeZoneList(input, query);
+  if (selectAll) {
+    input.focus();
+    input.select();
+  }
+
+  placeTimeZonePicker(popup);
+  requestAnimationFrame(() => {
+    if (tzState.popup === popup) placeTimeZonePicker(popup);
+  });
+}
+
+function placeTimeZonePicker(popup) {
+  if (!popup?.isConnected || !tzState.field) return;
+  const field = tzState.field.getBoundingClientRect();
+  const below = window.innerHeight - field.bottom - 12;
+  const above = field.top - 12;
+  popup.classList.toggle("up", popup.offsetHeight > below && above > below);
+}
+
+function closeTimeZonePicker() {
+  if (tzState.outside) document.removeEventListener("pointerdown", tzState.outside, true);
+  tzState.popup?.remove();
+  tzState.input?.setAttribute("aria-expanded", "false");
+  tzState.input?.removeAttribute("aria-controls");
+  tzState.input?.removeAttribute("aria-activedescendant");
+  tzState.field?.classList.remove("is-open");
+
+  tzState.input = null;
+  tzState.field = null;
+  tzState.popup = null;
+  tzState.list = null;
+  tzState.options = [];
+  tzState.active = 0;
+  tzState.outside = null;
+}
+
+function renderTimeZoneList(input, query) {
+  if (!tzState.popup || tzState.input !== input) return;
+
+  const code = input.closest("[data-price-model]")?.dataset.priceModel || "";
+  const selected = entryTimeZone(local.config?.pricing?.models?.[code]);
+  const search = tzSearchText(query);
+  const groups = [];
+
+  if (!search) {
+    const common = [];
+    for (const raw of [browserTimeZone(), ...TZ_COMMON]) {
+      const zone = canonicalTimeZone(raw);
+      if (zone && !common.includes(zone)) common.push(zone);
+    }
+    const selectedOnly =
+      selected && tzZoneIsValid(selected) && !common.includes(selected) ? tzZoneItem(selected) : null;
+    if (selectedOnly) groups.push({ label: "当前", items: [selectedOnly] });
+    groups.push({ label: "常用", items: common.map(tzZoneItem).filter(Boolean) });
+  } else {
+    const tokens = search.split(" ").filter(Boolean);
+    const offsets = [];
+    const words = [];
+    for (const token of tokens) {
+      const offset = tzOffsetToken(token);
+      if (offset === null) {
+        if (!words.includes(token)) words.push(token);
+      } else if (!offsets.includes(offset)) {
+        offsets.push(offset);
+      }
+    }
+    const catalog =
+      tokens.length === 1 && (tokens[0] === "utc" || tokens[0] === "gmt")
+        ? timeZoneCatalogItems().filter((item) => item.zone === "UTC")
+        : timeZoneCatalogItems();
+    const matches = catalog.filter(
+      (item) =>
+        words.every((token) => item.search.includes(token)) &&
+        offsets.every((minutes) => item.minutes === minutes),
+    );
+    const literal = query.trim();
+    if (literal && tzZoneIsValid(literal)) {
+      const item = tzZoneItem(literal);
+      const exists = item && matches.some((match) => match.zone.toLowerCase() === item.zone.toLowerCase());
+      if (item && !exists) matches.push(item);
+    }
+    const byRegion = new Map();
+    for (const item of matches) {
+      if (!byRegion.has(item.region)) byRegion.set(item.region, []);
+      byRegion.get(item.region).push(item);
+    }
+    const regions = [...byRegion.keys()].sort(
+      (left, right) => tzRegionRank(left) - tzRegionRank(right),
+    );
+    for (const region of regions) {
+      groups.push({ label: TZ_REGIONS[region] || region, items: byRegion.get(region) });
+    }
+  }
+
+  const safe = tzSafeId(code);
+  const zones = [];
+  let html = "";
+  groups.forEach((group, groupIndex) => {
+    const groupId = `tz-group-${safe}-${groupIndex}`;
+    const rows = group.items
+      .map((item) => {
+        const index = zones.push(item.zone) - 1;
+        const isSelected = item.zone === selected;
+        return `<div class="tz-option${isSelected ? " is-selected" : ""}" role="option" id="tz-opt-${safe}-${index}" aria-selected="${isSelected}" data-tz-zone="${esc(
+          item.zone,
+        )}">
+          <span class="tz-check" aria-hidden="true">${isSelected ? TZ_CHECK : ""}</span>
+          <span class="tz-name">${esc(item.zone)}</span>
+          <span class="tz-offset">${esc(item.offset)}</span>
+        </div>`;
+      })
+      .join("");
+    html += `<div role="group" aria-labelledby="${groupId}"><div class="tz-group" id="${groupId}">${group.label}</div>${rows}</div>`;
+  });
+
+  tzState.options = zones;
+  const selectedIndex = zones.indexOf(selected);
+  tzState.list.innerHTML = html;
+  tzState.list.hidden = zones.length === 0;
+
+  const empty = tzState.popup.querySelector("[data-tz-empty]");
+  if (empty) {
+    empty.hidden = zones.length > 0;
+    if (zones.length === 0) {
+      empty.innerHTML =
+        "<strong>没有匹配的时区</strong><span>试试城市（Shanghai）、国家（日本）或偏移（UTC+8）。</span>";
+    }
+  }
+
+  const count = tzState.popup.querySelector("[data-tz-count]");
+  if (count) {
+    count.textContent = search
+      ? `${zones.length} 个匹配`
+      : `共 ${timeZoneCatalogItems().length} 个时区 · 显示常用`;
+  }
+
+  setTimeZoneActive(search ? 0 : Math.max(0, selectedIndex), {
+    scroll: !search && selectedIndex >= 0,
+  });
+}
+
+function setTimeZoneActive(index, { scroll = false } = {}) {
+  if (!tzState.list) return;
+  const options = Array.from(tzState.list.querySelectorAll("[role='option']"));
+  if (options.length === 0) {
+    tzState.input?.removeAttribute("aria-activedescendant");
+    return;
+  }
+
+  const next = Math.max(0, Math.min(options.length - 1, index));
+  tzState.active = next;
+  options.forEach((option, optionIndex) =>
+    option.classList.toggle("is-active", optionIndex === next),
+  );
+  tzState.input?.setAttribute("aria-activedescendant", options[next].id);
+  if (scroll) options[next].scrollIntoView({ block: "nearest" });
+}
+
+function updateTimeZoneField(input) {
+  const zoneRow = input.closest(".price-zone");
+  const field = input.closest("[data-tz-field]");
+  const info = timeZoneInfo(input.value);
+  const offset = zoneRow?.querySelector("[data-tz-offset]");
+  const hint = zoneRow?.querySelector("[data-tz-hint]");
+
+  field?.classList.toggle("is-invalid", !info);
+  if (offset) {
+    offset.hidden = false;
+    offset.textContent = info ? info.offset : "未知";
+  }
+  if (hint) {
+    hint.textContent = timeZoneHint(info);
+    if (info) delete hint.dataset.tone;
+    else hint.dataset.tone = "bad";
+  }
+  if (info) input.removeAttribute("aria-invalid");
+  else input.setAttribute("aria-invalid", "true");
+}
+
+function commitTimeZone(input, zone, { focus = true } = {}) {
+  const code = input.closest("[data-price-model]")?.dataset.priceModel;
+  const entry = code ? local.config?.pricing?.models?.[code] : null;
+  const next = canonicalTimeZone(zone);
+  if (!entry || !next || !tzZoneIsValid(next)) return false;
+
+  if (entry.timezone !== next) {
+    entry.timezone = next;
+    local.dirty = true;
+  }
+  input.value = next;
+  closeTimeZonePicker();
+  updateTimeZoneField(input);
+  refreshSavebar();
+  if (focus) input.focus();
+  return true;
+}
+
+function restoreTimeZoneField(input) {
+  const code = input.closest("[data-price-model]")?.dataset.priceModel;
+  const entry = code ? local.config?.pricing?.models?.[code] : null;
+  input.value = entryTimeZone(entry);
+  closeTimeZonePicker();
+  updateTimeZoneField(input);
+}
+
+function onTimeZoneFieldEvent(element, type) {
+  if (type === "input") {
+    if (tzState.input !== element || !tzState.popup) {
+      openTimeZonePicker(element, { query: element.value });
+    } else {
+      renderTimeZoneList(element, element.value);
+    }
+    const offset = element.closest(".price-zone")?.querySelector("[data-tz-offset]");
+    if (offset) {
+      const info = timeZoneInfo(element.value);
+      offset.hidden = !info;
+      offset.textContent = info ? info.offset : "";
+    }
+    return;
+  }
+
+  settleTimeZone(element);
+}
+
+function settleTimeZone(input) {
+  const code = input.closest("[data-price-model]")?.dataset.priceModel;
+  const entry = code ? local.config?.pricing?.models?.[code] : null;
+  if (!entry) return;
+
+  const typed = canonicalTimeZone(input.value);
+  if (typed && typed !== entry.timezone && tzZoneIsValid(typed)) {
+    commitTimeZone(input, typed, { focus: false });
+    return;
+  }
+  restoreTimeZoneField(input);
+}
+
+function onTimeZoneKeyDown(event) {
+  const input = event.target;
+  if (!input?.matches?.("[data-price-timezone]")) return;
+
+  const open = tzState.input === input && tzState.popup;
+  const code = input.closest("[data-price-model]")?.dataset.priceModel;
+  const entry = code ? local.config?.pricing?.models?.[code] : null;
+
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    if (!open) {
+      openTimeZonePicker(input, { selectAll: true });
+      return;
+    }
+    if (tzState.options.length === 0) return;
+    setTimeZoneActive(tzState.active + (event.key === "ArrowDown" ? 1 : -1), { scroll: true });
+    return;
+  }
+
+  if (event.key === "Enter") {
+    if (!open) {
+      event.preventDefault();
+      openTimeZonePicker(input);
+      return;
+    }
+    event.preventDefault();
+    const zone = tzState.options[tzState.active];
+    if (zone) commitTimeZone(input, zone);
+    else if (tzZoneIsValid(input.value)) commitTimeZone(input, input.value);
+    return;
+  }
+
+  if (event.key === "Escape" && open) {
+    event.preventDefault();
+    input.value = entryTimeZone(entry);
+    closeTimeZonePicker();
+    updateTimeZoneField(input);
+    return;
+  }
+
+  if (event.key === "Tab" && open) closeTimeZonePicker();
 }
 
 function blankTier(from = "00:00", to = "00:00") {
@@ -830,6 +1496,11 @@ function onFieldEdit(event) {
     return;
   }
 
+  if (element.hasAttribute("data-price-timezone")) {
+    onTimeZoneFieldEvent(element, event.type);
+    return;
+  }
+
   const tierField = element.dataset.tierField;
   if (tierField) {
     const code = element.closest("[data-price-model]")?.dataset.priceModel;
@@ -961,6 +1632,29 @@ async function onClick(event) {
     return;
   }
 
+  const zoneOption = event.target.closest("[data-tz-zone]");
+  if (zoneOption) {
+    event.preventDefault();
+    if (tzState.input) commitTimeZone(tzState.input, zoneOption.dataset.tzZone);
+    return;
+  }
+
+  const tzField = event.target.closest("[data-tz-field]");
+  if (tzField) {
+    const input = tzField.querySelector("[data-price-timezone]");
+    if (!input) return;
+    if (tzState.input === input && tzState.popup) {
+      if (event.target.closest(".tz-caret")) {
+        event.preventDefault();
+        settleTimeZone(input);
+        input.focus();
+      }
+      return;
+    }
+    openTimeZonePicker(input, { selectAll: true });
+    return;
+  }
+
   const preset = event.target.closest("[data-window-preset]");
   if (preset) {
     const input = rootEl?.querySelector('[data-path="chain.context.window"]');
@@ -1033,7 +1727,7 @@ async function onClick(event) {
     const entry = pricing.models[code];
 
     if (action === "price-add-model") {
-      pricing.models[code] = { tiers: [blankTier()] };
+      pricing.models[code] = { timezone: defaultPricingTimezone(), tiers: [blankTier()] };
     } else if (action === "price-remove-model" && entry) {
       delete pricing.models[code];
     } else if (action === "price-add-tier" && entry?.tiers?.length) {

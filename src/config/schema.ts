@@ -94,6 +94,8 @@ export interface PriceTier {
 }
 
 export interface ModelPricing {
+  /** 该模型峰谷时段使用的 IANA 时区，例如 Asia/Shanghai。 */
+  timezone: string;
   tiers: PriceTier[];
 }
 
@@ -116,6 +118,24 @@ export interface ResponsesChainingConfig {
 
 export const DEFAULT_PRICING_CURRENCY = "CNY";
 export const DEFAULT_PRICING_UNIT = 1_000_000;
+
+/** 网关进程当前的 IANA 时区；旧配置迁移和新建配置都从这里取值。 */
+export function systemTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
+}
+
+function isTimeZone(value: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export interface GatewayConfig {
   version: number;
@@ -619,6 +639,8 @@ function readPricing(
   }
 
   const raw = source.pricing;
+  const defaultTimeZone = systemTimeZone();
+  let missingTimeZone = 0;
   pricing.currency = readString(raw, "currency", pricing.currency) || pricing.currency;
   pricing.unit = readNumber(raw, "unit", pricing.unit, 1, 1_000_000_000, "pricing.unit", errors);
 
@@ -685,7 +707,20 @@ function readPricing(
     if (!coversDay(tiers)) {
       errors.push(`${path}.tiers 必须覆盖一整天（00:00–24:00），可用 from == to 表示全天`);
     }
-    pricing.models[code] = { tiers };
+    let timezone = defaultTimeZone;
+    if (rawValue.timezone === undefined) {
+      missingTimeZone += 1;
+    } else if (typeof rawValue.timezone === "string" && isTimeZone(rawValue.timezone.trim())) {
+      timezone = rawValue.timezone.trim();
+    } else {
+      errors.push(`${path}.timezone 必须是 IANA 时区，例如 Asia/Shanghai 或 UTC`);
+    }
+    pricing.models[code] = { timezone, tiers };
+  }
+  if (missingTimeZone > 0) {
+    migrations.push(
+      `已为 ${missingTimeZone} 个模型的定价补充时区 ${defaultTimeZone}（原先按网关进程的本地时区计价）`,
+    );
   }
   if (dropped > 0) {
     migrations.push(`pricing.models 中 ${dropped} 个条目没有对应已绑定提供商的模型，已忽略`);

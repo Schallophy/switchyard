@@ -305,6 +305,7 @@ test("markSuccess accumulates cost from the configured price tier", async () => 
     unit: 1_000_000,
     models: {
       "dashscope/a": {
+        timezone: "UTC",
         tiers: [
           { from: "00:00", to: "00:00", input: 2, cachedInput: 0.2, output: 8 },
         ],

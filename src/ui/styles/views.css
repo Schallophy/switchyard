@@ -1338,9 +1338,14 @@
 }
 
 .price-model {
+  position: relative;
   border: 1px solid var(--rule);
   border-radius: var(--radius);
   background: var(--surface);
+}
+
+.price-model:focus-within {
+  z-index: 2;
 }
 
 .price-head {
@@ -1368,6 +1373,222 @@
 
 .price-head .btn {
   flex-shrink: 0;
+}
+
+.price-zone {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px 16px;
+  padding: 12px;
+}
+
+.price-zone .price-cell {
+  width: min(280px, 100%);
+}
+
+.price-zone .tz-cell {
+  width: min(300px, 100%);
+}
+
+.price-zone .field-hint {
+  padding-bottom: 6px;
+}
+
+.price-zone .tz-hint {
+  flex: 1 1 240px;
+  min-width: 200px;
+}
+
+/* 时区选择器：字段显示当前时区与偏移，弹层按“时刻表”排列 */
+.tz-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 8px 0 9px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--surface);
+  transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
+}
+
+.tz-field:hover {
+  border-color: var(--ink-faint);
+}
+
+.tz-field:focus-within {
+  border-color: var(--ink);
+  box-shadow: 0 0 0 1px var(--ink);
+}
+
+.tz-field.is-invalid {
+  border-color: var(--stop);
+  box-shadow: 0 0 0 2px var(--stop-soft);
+}
+
+.tz-input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13px;
+  text-overflow: ellipsis;
+}
+
+.tz-input:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+.tz-input[aria-invalid="true"] {
+  color: var(--stop);
+}
+
+.tz-offset {
+  flex-shrink: 0;
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tz-caret {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  color: var(--ink-faint);
+  transition: transform var(--fast) var(--ease);
+}
+
+.tz-field.is-open .tz-caret {
+  transform: rotate(180deg);
+}
+
+.tz-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 30;
+  width: min(380px, calc(100vw - 58px));
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  animation: tz-pop-in 120ms var(--ease);
+}
+
+.tz-pop.up {
+  top: auto;
+  bottom: calc(100% + 4px);
+}
+
+@keyframes tz-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.tz-list {
+  max-height: 296px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.tz-list[hidden],
+.tz-empty[hidden] {
+  display: none;
+}
+
+.tz-group {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 6px 10px 4px;
+  background: var(--surface);
+  color: var(--ink-soft);
+  font-size: 10.5px;
+}
+
+.tz-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px 0 6px;
+  border-left: 2px solid transparent;
+  cursor: pointer;
+  user-select: none;
+}
+
+.tz-option:hover,
+.tz-option.is-active {
+  background: var(--surface-hover);
+}
+
+.tz-option.is-selected {
+  border-left-color: var(--ink);
+}
+
+.tz-check {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  flex-shrink: 0;
+  color: var(--ink);
+}
+
+.tz-check svg {
+  width: 12px;
+  height: 12px;
+}
+
+.tz-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tz-option.is-selected .tz-name {
+  font-weight: 600;
+}
+
+.tz-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 18px 12px;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.tz-empty strong {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.tz-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--rule-soft);
+  color: var(--ink-soft);
+  font-size: 10.5px;
 }
 
 .price-tiers {
@@ -2076,6 +2297,15 @@
   .price-actions {
     grid-column: 1 / -1;
     padding-bottom: 0;
+  }
+
+  .price-zone .tz-cell {
+    width: 100%;
+  }
+
+  .price-zone .tz-hint {
+    flex-basis: 100%;
+    min-width: 0;
   }
 
   /* 添加模型：接近全屏的居中面板 */
