@@ -1,5 +1,5 @@
 import { watch, type FSWatcher } from "node:fs";
-import { stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { ConfigError, applyEnvOverrides, loadConfig } from "./config/load.ts";
 import { DEFAULT_LOG_MAX_BYTES, DEFAULT_LOG_MAX_FILES } from "./config/schema.ts";
@@ -125,7 +125,10 @@ async function main(): Promise<void> {
   let watcher: FSWatcher | null = null;
   if (!watchDisabled) {
     try {
-      watcher = watch(dirname(configPath), { persistent: false }, (_event, filename) => {
+      // Windows 8.3 短路径（如 SCHALL~1）会让 libuv 在收到长文件名时触发前缀断言崩溃；
+      // 监听真实长路径。文件不存在时 realpath 失败，退回原目录。
+      const watchDir = await realpath(dirname(configPath)).catch(() => dirname(configPath));
+      watcher = watch(watchDir, { persistent: false }, (_event, filename) => {
         if (filename && String(filename) !== basename(configPath)) return;
         if (reloadTimer) clearTimeout(reloadTimer);
         reloadTimer = setTimeout(() => {
